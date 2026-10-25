@@ -1,0 +1,4 @@
+# pnpm 12 起此文件承载 pnpm 配置；本项目是单仓，没有 packages 列表。
+allowBuilds:
+    esbuild: true
+    lefthook: true

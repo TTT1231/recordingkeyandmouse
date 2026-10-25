@@ -1,0 +1,14 @@
+pre-commit:
+    jobs:
+        - name: lint (staged)
+          glob: "*.{ts,tsx,cts,mts}"
+          run: pnpm exec oxlint --fix --no-error-on-unmatched-pattern {staged_files}
+          stage_fixed: true
+        - name: oxfmt
+          glob: "*.{js,jsx,ts,tsx,cjs,mjs,cts,mts,json,jsonc}"
+          run: pnpm exec oxfmt --no-error-on-unmatched-pattern {staged_files}
+          stage_fixed: true
+pre-push:
+    jobs:
+        - name: typecheck
+          run: pnpm run typecheck

@@ -1,0 +1,12 @@
+{
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    "plugins": [],
+    "options": {
+        "reportUnusedDisableDirectives": "warn"
+    },
+    "env": {
+        "builtin": true,
+        "browser": true
+    },
+    "ignorePatterns": ["dist", "src-tauri/target", "src-tauri/gen"]
+}
