@@ -34,13 +34,14 @@
 | `pnpm typecheck` | TypeScript 类型检查 |
 | `pnpm test` | vitest 单元测试 |
 
-Rust 侧检查在 `src-tauri/` 下执行：`cargo fmt --all`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。CI（[ci.yml](.github/workflows/ci.yml)）在每次推送时运行前端检查与 Windows 上的 Rust 检查。
+Rust 侧检查在 `src-tauri/` 下执行：`cargo fmt --all`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。CI（[ci.yml](.github/workflows/ci.yml)）在推送到 main 和提交 PR 时运行前端检查与 Windows 上的 Rust 检查。
 
 ## 目录结构
 
 ```
 src/          前端：任务、预览、时间线与编辑界面（React）
 src-tauri/    Rust：桌面应用与输入引擎（捕获、调度、注入、存储）
+docs/         需求、技术方案、实施计划与交互原型
 ```
 
 两层的职责边界与依赖方向见 [ADR-0001](docs/decisions/0001-technical-selection.md) 第 3 节；输入热路径不允许经过前端。

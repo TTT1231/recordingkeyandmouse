@@ -2,6 +2,25 @@
 
 Repeat：桌面键鼠录制、编辑与回放工具。Tauri 2 桌面壳；前端在 `src/`（React），Rust 应用与输入引擎在 `src-tauri/`。产品需求、技术方案与实施计划位于本仓库 [docs/](docs/README.md)。
 
+## 项目架构
+
+```
+repeat/
+├── src/                     # 前端（React + TypeScript）：界面组件与 *.test.ts 单元测试
+├── src-tauri/               # Rust 应用与输入引擎（捕获、事件队列、调度、注入、存储）
+│   ├── src/                 # 应用入口（main.rs / lib.rs）
+│   ├── tauri.conf.json      # Tauri 窗口与应用配置
+│   ├── capabilities/        # Tauri 权限配置
+│   └── target/              # 构建产物，不改不提交
+├── docs/                    # 需求、实施计划、交互原型；入口见 docs/README.md
+│   └── decisions/           # 架构决策记录（ADR-0001）
+├── .github/workflows/       # CI：前端检查与 Windows 上的 Rust 检查
+├── package.json             # 前端脚本与依赖（tauri / lint / typecheck / test）
+└── lefthook.yml             # git hooks：pre-commit lint/format、pre-push typecheck
+```
+
+前端与 Rust 侧目前均为官方脚手架；两层职责边界与依赖方向见 ADR-0001 第 3 节。
+
 ## 硬约束
 
 以下规则来自 [ADR-0001](docs/decisions/0001-technical-selection.md)，违反会直接破坏产品正确性：
@@ -18,24 +37,25 @@ Repeat：桌面键鼠录制、编辑与回放工具。Tauri 2 桌面壳；前端
 - 改 Rust（在 `src-tauri/` 下执行）：`cargo fmt --all`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。
 - 本机在 Git Bash 中执行任何 cargo 命令前，必须先把 MSVC 链接器目录放到 PATH 最前，否则 rustc 会命中 Git 自带的同名 `link.exe`（报 `link: extra operand`）：
 
-  ```sh
-  export PATH="/d/soft/BuildTools/VC/Tools/MSVC/<版本号>/bin/Hostx64/x64:$HOME/.cargo/bin:$PATH"
-  ```
+    ```sh
+    export PATH="/d/soft/BuildTools/VC/Tools/MSVC/<版本号>/bin/Hostx64/x64:$HOME/.cargo/bin:$PATH"
+    ```
 
-  cmd/PowerShell 不受影响。MSVC 版本号以 `ls /d/soft/BuildTools/VC/Tools/MSVC` 为准。
+    cmd/PowerShell 不受影响。MSVC 版本号以 `ls /d/soft/BuildTools/VC/Tools/MSVC` 为准。
+
 - 涉及真实捕获或注入的改动，模拟测试不能替代原生环境验证；按[实施计划第 5 节](docs/implementation-plan.md)保留事件级证据，不以"目标应用最终显示正确"代替核对。
 - pre-commit 自动对暂存文件执行 lint 与格式化；pre-push 运行 `pnpm typecheck`。已通过且输入未变的检查不必重复执行。
 
 ## 按任务阅读
 
-| 改动内容 | 先读 |
-| --- | --- |
-| 输入捕获 / 注入后端 | ADR-0001 第 4 节（Windows 低级钩子与 SendInput、X11 RECORD/XTEST） |
-| 时间、调度与回放节奏 | ADR-0001 第 6 节 |
-| 事件模型、动作归并与编辑语义 | ADR-0001 第 5 节 |
-| 存储、失败处理与会话状态 | ADR-0001 第 7 节 |
-| 界面行为是否属于已确认范围 | [功能需求](docs/requirements.md)（以 FR/AC 编号核对） |
-| 工作顺序与阶段验收 | [实施计划](docs/implementation-plan.md) |
+| 改动内容                     | 先读                                                               |
+| ---------------------------- | ------------------------------------------------------------------ |
+| 输入捕获 / 注入后端          | ADR-0001 第 4 节（Windows 低级钩子与 SendInput、X11 RECORD/XTEST） |
+| 时间、调度与回放节奏         | ADR-0001 第 6 节                                                   |
+| 事件模型、动作归并与编辑语义 | ADR-0001 第 5 节                                                   |
+| 存储、失败处理与会话状态     | ADR-0001 第 7 节                                                   |
+| 界面行为是否属于已确认范围   | [功能需求](docs/requirements.md)（以 FR/AC 编号核对）              |
+| 工作顺序与阶段验收           | [实施计划](docs/implementation-plan.md)                            |
 
 ## 文档维护
 
