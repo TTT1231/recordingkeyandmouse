@@ -12,7 +12,7 @@ repeat/
 │   ├── tauri.conf.json      # Tauri 窗口与应用配置
 │   ├── capabilities/        # Tauri 权限配置
 │   └── target/              # 构建产物，不改不提交
-├── docs/                    # 需求、实施计划、交互原型；入口见 docs/README.md
+├── docs/                    # 需求、实施计划、历史交互原型与验证材料；入口见 docs/README.md
 │   └── decisions/           # 架构决策记录（ADR-0001）
 ├── .github/workflows/       # CI：前端检查与 Windows 上的 Rust 检查
 ├── package.json             # 前端脚本与依赖（tauri / lint / typecheck / test）
