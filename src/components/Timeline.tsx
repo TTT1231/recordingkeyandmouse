@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatClock, formatSeconds, formatTimelineTick } from "../format";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { formatSeconds, formatTimelineTick } from "../format";
 import type { ActionView, DocumentView } from "../types";
 import { Icon } from "./Icon";
 import { zoomTimeline } from "../timeline";
 const RULER = 28,
     LANE = 44,
+    PAD = 8,
     MUTED = "#616b70",
     ACCENT = "#1b6c80",
     ACCENT_SOFT = "#e6f0f3",
@@ -21,7 +22,6 @@ interface Props {
     selectedId: string | null;
     disabled?: boolean;
     onSeek: (timeUs: number, action?: ActionView) => void;
-    onEdit: (action: ActionView) => void;
 }
 function lane(action: ActionView) {
     return action.kind.type === "wait" ? 2 : ["keys", "text"].includes(action.kind.type) ? 1 : 0;
@@ -43,52 +43,96 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
     ctx.arcTo(x, y, x + radius, y, radius);
     ctx.closePath();
 }
-function drawCursorMark(ctx: CanvasRenderingContext2D, x: number, y: number) {
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x, y + 15);
-    ctx.lineTo(x + 4, y + 11);
-    ctx.lineTo(x + 7, y + 18);
-    ctx.lineTo(x + 10, y + 16);
-    ctx.lineTo(x + 7, y + 10);
-    ctx.lineTo(x + 12, y + 9);
-    ctx.closePath();
+function drawSelectionBand(ctx: CanvasRenderingContext2D, x: number, top: number) {
+    ctx.fillStyle = ACCENT_SOFT;
+    roundRect(ctx, x - 5, top + 7, 10, 32, 4);
     ctx.fill();
 }
-function drawMouseMark(
+
+/** 点击用一根竖向刻线表示：左键帽子在上、右键在下、中键居中，双击是双帽子。 */
+function drawClickTick(
     ctx: CanvasRenderingContext2D,
-    cx: number,
-    cy: number,
-    button: string | null,
+    x: number,
+    top: number,
+    button: string,
     doubleClick: boolean,
-    wheel: boolean,
-    color: string,
+    selected: boolean,
 ) {
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineWidth = 1.2;
-    roundRect(ctx, cx - 8, cy - 10, 16, 20, 8);
+    const y0 = top + 9,
+        y1 = top + 37,
+        center = (y0 + y1) / 2;
+    if (selected) drawSelectionBand(ctx, x, top);
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = selected ? 2 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
     ctx.stroke();
-    if (button === "left") ctx.fillRect(cx - 7, cy - 8, 6, 7);
-    if (button === "right") ctx.fillRect(cx + 1, cy - 8, 6, 7);
-    if (button === "middle") ctx.fillRect(cx - 1.5, cy - 8, 3, 7);
-    if (wheel) {
-        ctx.beginPath();
-        ctx.moveTo(cx, cy - 6);
-        ctx.lineTo(cx, cy + 4);
-        ctx.moveTo(cx - 2.5, cy - 3.5);
-        ctx.lineTo(cx, cy - 6);
-        ctx.lineTo(cx + 2.5, cy - 3.5);
-        ctx.moveTo(cx - 2.5, cy + 1.5);
-        ctx.lineTo(cx, cy + 4);
-        ctx.lineTo(cx + 2.5, cy + 1.5);
-        ctx.stroke();
+    const capY = button === "right" ? y1 - 5 : button === "middle" ? center : y0 + 5;
+    const gap = doubleClick ? 2.5 : 0;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    if (gap) {
+        ctx.moveTo(x - 3.2, capY - gap);
+        ctx.lineTo(x + 3.2, capY - gap);
+        ctx.moveTo(x - 3.2, capY + gap);
+        ctx.lineTo(x + 3.2, capY + gap);
+    } else {
+        ctx.moveTo(x - 3.2, capY);
+        ctx.lineTo(x + 3.2, capY);
     }
-    if (doubleClick) {
-        ctx.beginPath();
-        ctx.arc(cx + 11, cy - 4, 1.4, 0, Math.PI * 2);
-        ctx.arc(cx + 11, cy, 1.4, 0, Math.PI * 2);
+    ctx.stroke();
+}
+
+/** 滚轮用同一条刻线加中空圆点，和点击的短帽子区分。 */
+function drawWheelTick(ctx: CanvasRenderingContext2D, x: number, top: number, selected: boolean) {
+    const y0 = top + 9,
+        y1 = top + 37,
+        center = (y0 + y1) / 2;
+    if (selected) drawSelectionBand(ctx, x, top);
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = selected ? 2 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(x, center, 2.6, 0, Math.PI * 2);
+    ctx.stroke();
+}
+
+/** 移动/拖拽用横线：拖拽为虚线并在终点画空心圆，避免每个动作重复一个大图标。 */
+function drawMotionLine(
+    ctx: CanvasRenderingContext2D,
+    left: number,
+    right: number,
+    top: number,
+    drag: boolean,
+    selected: boolean,
+) {
+    const y = top + 25;
+    if (selected) {
+        ctx.fillStyle = ACCENT_SOFT;
+        roundRect(ctx, left, top + 12, Math.max(4, right - left), 24, 5);
         ctx.fill();
+    }
+    ctx.strokeStyle = selected ? ACCENT : ACCENT_LINE;
+    ctx.lineWidth = selected ? 2.4 : 2;
+    ctx.setLineDash(drag ? [4, 3] : []);
+    ctx.beginPath();
+    ctx.moveTo(left + 1, y);
+    ctx.lineTo(Math.max(left + 2, right - 1), y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (drag) {
+        // 拖拽只补一个终点短竖线：虚线本身表示按住拖动，避免密集时叠成一串圆点。
+        ctx.strokeStyle = ACCENT;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(right - 1, y - 4);
+        ctx.lineTo(right - 1, y + 4);
+        ctx.stroke();
     }
 }
 export function Timeline(p: Props) {
@@ -96,7 +140,6 @@ export function Timeline(p: Props) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [width, setWidth] = useState(600);
     const [view, setView] = useState({ zoom: 1, startUs: 0 });
-    const [hover, setHover] = useState<{ action: ActionView; x: number; y: number } | null>(null);
     const dragging = useRef<{ pan: boolean; startX: number; startUs: number } | null>(null);
     const hasWaits = useMemo(() => p.rows.some(a => a.kind.type === "wait"), [p.rows]);
     const height = RULER + LANE * (hasWaits ? 3 : 2);
@@ -107,17 +150,29 @@ export function Timeline(p: Props) {
     const span = extent / view.zoom;
     const maxStart = Math.max(0, extent - span);
     const start = Math.max(0, Math.min(view.startUs, maxStart));
-    useEffect(() => {
+    useLayoutEffect(() => {
         setView({ zoom: 1, startUs: 0 });
     }, [p.recording.taskId]);
-    useEffect(() => {
+    useLayoutEffect(() => {
         const track = trackRef.current;
         if (!track) return;
-        const observer = new ResizeObserver(() => setWidth(Math.max(1, track.clientWidth)));
+        const measure = () => {
+            const next = Math.max(1, track.clientWidth);
+            setWidth(current => (current === next ? current : next));
+        };
+        measure();
+        const observer = new ResizeObserver(measure);
         observer.observe(track);
-        setWidth(Math.max(1, track.clientWidth));
         return () => observer.disconnect();
     }, []);
+    // 从隐藏状态重新显示时，在浏览器绘制前重新测量并重绘，避免先露出旧画布再跳一下。
+    useLayoutEffect(() => {
+        if (p.hidden) return;
+        const track = trackRef.current;
+        if (!track) return;
+        const next = Math.max(1, track.clientWidth);
+        setWidth(current => (current === next ? current : next));
+    }, [p.hidden]);
     const zoomAt = useCallback(
         (factor: number, x: number) => setView(current => zoomTimeline(current, extent, width, factor, x)),
         [extent, width],
@@ -144,23 +199,37 @@ export function Timeline(p: Props) {
         canvas.addEventListener("wheel", wheel, { passive: false });
         return () => canvas.removeEventListener("wheel", wheel);
     }, [extent, width, zoomAt]);
-    useEffect(() => {
+    useLayoutEffect(() => {
         const canvas = canvasRef.current,
             ctx = canvas?.getContext("2d");
         if (!canvas || !ctx) return;
         const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.round(width * dpr);
-        canvas.height = Math.round(height * dpr);
+        const backingWidth = Math.round(width * dpr);
+        const backingHeight = Math.round(height * dpr);
+        // 只在尺寸变化时重置画布；切换任务时不要无谓清空重绘，避免闪帧。
+        if (canvas.width !== backingWidth) canvas.width = backingWidth;
+        if (canvas.height !== backingHeight) canvas.height = backingHeight;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
-        const xOf = (t: number) => ((t - start) / span) * width;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        const contentWidth = Math.max(1, width - PAD * 2);
+        const xOf = (t: number) => PAD + ((t - start) / span) * contentWidth;
         const ribbonTop = RULER + 2,
             ribbonHeight = LANE * 2 - 4;
         const endX = xOf(p.recording.durationUs);
-        // 刻度尺：整数标签 + 圆点刻痕（对齐原型 ruler-tick）。
-        let step = 1_000_000;
-        while ((step / span) * width < 66) step *= 2;
-        while ((step / span) * width > 200 && step > 125_000) step /= 2;
+        // 刻度尺：mm:ss 整秒标签 + 圆点刻痕；亚秒只做无标签的中间点。
+        const labelSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+        let step = 3_600_000;
+        for (const seconds of labelSteps) {
+            const candidate = seconds * 1_000_000;
+            if ((candidate / span) * contentWidth >= 72) {
+                step = candidate;
+                break;
+            }
+        }
         ctx.font = `12px ${FIGURES}`;
         for (let t = Math.floor(start / step) * step; t <= start + span; t += step / 2) {
             const x = xOf(t);
@@ -168,25 +237,35 @@ export function Timeline(p: Props) {
             const minor = Math.abs(t / step - Math.round(t / step)) > 0.01;
             ctx.fillStyle = minor ? "#e4e8ea" : "#cfd5d8";
             ctx.beginPath();
-            ctx.arc(x, RULER - 5, minor ? 1.2 : 1.7, 0, Math.PI * 2);
+            ctx.arc(Math.max(1.2, Math.min(width - 1.2, x)), RULER - 5, minor ? 1.2 : 1.7, 0, Math.PI * 2);
             ctx.fill();
-            if (!minor && x > 22 && x < width - 22 && !(endX > 0 && Math.abs(x - endX) < 48)) {
+            if (!minor && !(x > 0 && endX > 0 && Math.abs(x - endX) < 48)) {
                 ctx.fillStyle = MUTED;
-                ctx.textAlign = "center";
-                ctx.fillText(formatTimelineTick(t), x, 11);
+                const label = formatTimelineTick(t);
+                if (x < 24) {
+                    ctx.textAlign = "left";
+                    ctx.fillText(label, 2, 11);
+                } else if (x > width - 24) {
+                    ctx.textAlign = "right";
+                    ctx.fillText(label, width - 2, 11);
+                } else {
+                    ctx.textAlign = "center";
+                    ctx.fillText(label, x, 11);
+                }
             }
         }
         // 录制 ribbon：一条连续圆角底板覆盖鼠标 + 键盘轨道。
-        const ribbonRight = Math.min(width, endX);
-        if (ribbonRight > 10) {
+        const ribbonRight = Math.min(width - PAD, endX);
+        if (ribbonRight > PAD + 10) {
             ctx.fillStyle = RIBBON_BG;
             ctx.strokeStyle = RIBBON_LINE;
             ctx.lineWidth = 1;
-            roundRect(ctx, 0.5, ribbonTop, ribbonRight - 0.5, ribbonHeight, 9);
+            roundRect(ctx, PAD + 0.5, ribbonTop, ribbonRight - PAD - 0.5, ribbonHeight, 9);
             ctx.fill();
             ctx.stroke();
         }
         const bottom = height;
+        let lastKeyRight = -1;
         for (const action of p.rows) {
             const x0 = xOf(action.startUs),
                 x1 = xOf(action.endUs);
@@ -198,25 +277,8 @@ export function Timeline(p: Props) {
                 const left = Math.max(0, x0),
                     right = Math.min(width, x1);
                 if (right - left < 2) continue;
-                if (emphasized) {
-                    ctx.fillStyle = "#dcebef";
-                    roundRect(ctx, left, top + 6, right - left, LANE - 12, 5);
-                    ctx.fill();
-                }
-                ctx.fillStyle = ACCENT;
-                drawCursorMark(ctx, Math.min(left + 8, right - 6), top + 12);
-                ctx.fillStyle = emphasized ? ACCENT : ACCENT_LINE;
-                roundRect(ctx, Math.min(left + 6, right - 6), top + 37, Math.max(12, right - left - 12), 2, 1);
-                ctx.fill();
-                if (action.kind.type === "drag") {
-                    ctx.strokeStyle = "#52676c";
-                    ctx.lineWidth = 1;
-                    ctx.setLineDash([3, 2]);
-                    roundRect(ctx, left, top + 6, right - left, LANE - 12, 5);
-                    ctx.stroke();
-                    ctx.setLineDash([]);
-                }
-                if (right - left >= 58) {
+                drawMotionLine(ctx, left, right, top, action.kind.type === "drag", emphasized);
+                if (right - left >= 74) {
                     ctx.fillStyle = ACCENT;
                     ctx.font = `12px ${FIGURES}`;
                     ctx.textAlign = "left";
@@ -224,53 +286,14 @@ export function Timeline(p: Props) {
                     ctx.beginPath();
                     ctx.rect(left, top, right - left, LANE);
                     ctx.clip();
-                    ctx.fillText("移动", Math.min(left + 24, right - 34), top + 26);
+                    ctx.fillText(action.kind.type === "drag" ? "拖拽" : "移动", left + 10, top + 17);
                     ctx.restore();
                 }
             } else if (action.kind.type === "click" || action.kind.type === "wheel") {
-                const center = Math.max(12, Math.min(width - 12, x0));
-                if (emphasized) {
-                    ctx.fillStyle = ACCENT_SOFT;
-                    ctx.strokeStyle = ACCENT;
-                    ctx.lineWidth = 1;
-                    roundRect(ctx, center - 12, top + 8, 24, 30, 4);
-                    ctx.fill();
-                    ctx.stroke();
-                }
-                drawMouseMark(
-                    ctx,
-                    center,
-                    top + 23,
-                    action.kind.type === "click" ? action.kind.button : null,
-                    action.kind.type === "click" && action.kind.count === 2,
-                    action.kind.type === "wheel",
-                    ACCENT,
-                );
-                if (action.kind.type === "click") {
-                    const index = p.rows.indexOf(action);
-                    const next = p.rows.slice(index + 1).find(item => lane(item) === 0);
-                    const room = (next ? xOf(next.startUs) : width) - center;
-                    if (room > 72) {
-                        const buttonLabel =
-                            action.kind.button === "right"
-                                ? "右键"
-                                : action.kind.button === "middle"
-                                  ? "中键"
-                                  : action.kind.button === "x1"
-                                    ? "侧键1"
-                                    : action.kind.button === "x2"
-                                      ? "侧键2"
-                                      : "左键";
-                        ctx.fillStyle = MUTED;
-                        ctx.font = `12px ${FIGURES}`;
-                        ctx.textAlign = "left";
-                        ctx.fillText(
-                            `${buttonLabel}${action.kind.count === 2 ? "双击" : "单击"}`,
-                            center + 16,
-                            top + 27,
-                        );
-                    }
-                }
+                const x = Math.max(1, Math.min(width - 1, x0));
+                if (action.kind.type === "click")
+                    drawClickTick(ctx, x, top, action.kind.button, action.kind.count === 2, emphasized);
+                else drawWheelTick(ctx, x, top, emphasized);
             } else if (action.kind.type === "wait") {
                 const left = Math.max(0, x0),
                     right = Math.min(width, Math.max(x1, x0 + 3));
@@ -287,10 +310,26 @@ export function Timeline(p: Props) {
                     ctx.fillText(formatSeconds(action.endUs - action.startUs), (left + right) / 2, top + 26);
                 }
             } else {
+                const left = Math.max(0, x0);
+                // 键盘动作密集时退化成短刻线，不再让白色芯片互相压住。
+                if (left < lastKeyRight + 4) {
+                    if (emphasized) {
+                        ctx.fillStyle = ACCENT_SOFT;
+                        roundRect(ctx, left - 2, top + 14, 6, 20, 3);
+                        ctx.fill();
+                    }
+                    ctx.strokeStyle = emphasized ? ACCENT : "#4c5b63";
+                    ctx.lineWidth = emphasized ? 2 : 1.2;
+                    ctx.beginPath();
+                    ctx.moveTo(left, top + 16);
+                    ctx.lineTo(left, top + 32);
+                    ctx.stroke();
+                    lastKeyRight = Math.max(lastKeyRight, left + 3);
+                    continue;
+                }
                 const label = action.kind.type === "keys" ? action.kind.chord : action.kind.text.replace(/\n/g, "↵");
                 const short = label.length > 12 ? `${label.slice(0, 11)}…` : label;
                 ctx.font = `13px ${FIGURES}`;
-                const left = Math.max(0, x0);
                 const w = Math.max(24, Math.min(width - left, ctx.measureText(short).width + 16));
                 const top2 = laneTop(1);
                 ctx.fillStyle = emphasized ? "#fff" : "#ffffffc7";
@@ -307,6 +346,7 @@ export function Timeline(p: Props) {
                 ctx.clip();
                 ctx.fillText(short, left + 8, top2 + 26);
                 ctx.restore();
+                lastKeyRight = left + w;
             }
         }
         // 结束标记与播放头。
@@ -335,7 +375,20 @@ export function Timeline(p: Props) {
             ctx.arc(head, RULER - 9, 5, 0, Math.PI * 2);
             ctx.fill();
         }
-    }, [p.rows, p.timeUs, p.selectedId, p.recording.durationUs, width, height, view.zoom, start, span, hasWaits]);
+    }, [
+        p.rows,
+        p.timeUs,
+        p.selectedId,
+        p.recording.taskId,
+        p.recording.durationUs,
+        width,
+        height,
+        view.zoom,
+        start,
+        span,
+        hasWaits,
+        p.hidden,
+    ]);
     const hit = (clientX: number, clientY: number) => {
         const rect = canvasRef.current!.getBoundingClientRect();
         const x = clientX - rect.left;
@@ -344,8 +397,8 @@ export function Timeline(p: Props) {
         if (y >= laneTop(0) && y < laneTop(0) + LANE) rowLane = 0;
         else if (y >= laneTop(1) && y < laneTop(1) + LANE) rowLane = 1;
         else if (hasWaits && y >= laneTop(2) && y < laneTop(2) + LANE) rowLane = 2;
-        const time = start + (x / width) * span;
-        const tolerance = (span / width) * 8;
+        const time = start + ((x - PAD) / Math.max(1, width - PAD * 2)) * span;
+        const tolerance = (span / Math.max(1, width - PAD * 2)) * 8;
         let best: ActionView | undefined;
         let distance = Infinity;
         for (const action of p.rows) {
@@ -364,7 +417,6 @@ export function Timeline(p: Props) {
     return (
         <section hidden={p.hidden} className="timeline" aria-label="录制时间线" data-tour="timeline">
             <div className="timeline-heading">
-                <h2>时间线</h2>
                 <div className="timeline-zoom">
                     <button
                         type="button"
@@ -409,7 +461,7 @@ export function Timeline(p: Props) {
             </div>
             <div className="timeline-body">
                 <div className="lane-labels">
-                    <div className="ruler-label">时间</div>
+                    <div className="ruler-label" aria-hidden="true" />
                     <div className="lane-label">
                         <Icon name="mouse" size={15} />
                         鼠标
@@ -429,40 +481,34 @@ export function Timeline(p: Props) {
                     <canvas
                         ref={canvasRef}
                         style={{ height }}
-                        tabIndex={0}
-                        role="slider"
-                        aria-label="播放位置，方向键定位，Home 回到开头，End 到结尾"
-                        aria-valuemin={0}
-                        aria-valuemax={p.recording.durationUs / 1000}
-                        aria-valuenow={p.timeUs / 1000}
-                        aria-valuetext={formatClock(p.timeUs)}
                         onPointerDown={e => {
                             if (p.disabled) return;
                             e.currentTarget.setPointerCapture(e.pointerId);
-                            dragging.current = { pan: e.shiftKey || e.button === 1, startX: e.clientX, startUs: start };
-                            if (!dragging.current.pan) {
+                            const pan = e.shiftKey || e.button === 1;
+                            dragging.current = { pan, startX: e.clientX, startUs: start };
+                            if (!pan) {
                                 const result = hit(e.clientX, e.clientY);
                                 p.onSeek(result.time, result.action);
                             }
                         }}
                         onPointerMove={e => {
-                            const result = hit(e.clientX, e.clientY);
-                            if (dragging.current) {
-                                if (dragging.current.pan)
-                                    setView(current => ({
-                                        ...current,
-                                        startUs: Math.max(
-                                            0,
-                                            Math.min(
-                                                maxStart,
-                                                dragging.current!.startUs -
-                                                    ((e.clientX - dragging.current!.startX) / width) * span,
-                                            ),
+                            if (!dragging.current) return;
+                            if (dragging.current.pan)
+                                setView(current => ({
+                                    ...current,
+                                    startUs: Math.max(
+                                        0,
+                                        Math.min(
+                                            maxStart,
+                                            dragging.current!.startUs -
+                                                ((e.clientX - dragging.current!.startX) / width) * span,
                                         ),
-                                    }));
-                                else p.onSeek(result.time, result.action);
-                                setHover(null);
-                            } else setHover(result.action ? { action: result.action, x: result.x, y: result.y } : null);
+                                    ),
+                                }));
+                            else {
+                                const result = hit(e.clientX, e.clientY);
+                                p.onSeek(result.time, result.action);
+                            }
                         }}
                         onPointerUp={e => {
                             dragging.current = null;
@@ -472,52 +518,7 @@ export function Timeline(p: Props) {
                         onPointerCancel={() => {
                             dragging.current = null;
                         }}
-                        onPointerLeave={() => setHover(null)}
-                        onDoubleClick={e => {
-                            if (p.disabled) return;
-                            const action = hit(e.clientX, e.clientY).action;
-                            if (action) p.onEdit(action);
-                        }}
-                        onKeyDown={e => {
-                            if (p.disabled) return;
-                            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                                e.preventDefault();
-                                p.onSeek(
-                                    e.key === "Home"
-                                        ? 0
-                                        : e.key === "End"
-                                          ? p.recording.durationUs
-                                          : Math.max(
-                                                0,
-                                                Math.min(
-                                                    p.recording.durationUs,
-                                                    p.timeUs + (e.key === "ArrowLeft" ? -100_000 : 100_000),
-                                                ),
-                                            ),
-                                );
-                            }
-                            if (e.key === "+" || e.key === "-") {
-                                e.preventDefault();
-                                zoomAt(e.key === "+" ? 1.25 : 0.8, width / 2);
-                            }
-                        }}
                     />
-                    {hover && (
-                        <div
-                            className="timeline-tooltip"
-                            role="tooltip"
-                            style={{
-                                left: Math.min(Math.max(4, hover.x), Math.max(4, width - 270)),
-                                top: Math.max(20, hover.y - 44),
-                            }}
-                        >
-                            <strong>{hover.action.title}</strong>
-                            <span>{hover.action.detail}</span>
-                            <span>
-                                {formatClock(hover.action.startUs)} – {formatClock(hover.action.endUs)}
-                            </span>
-                        </div>
-                    )}
                 </div>
             </div>
         </section>

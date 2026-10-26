@@ -68,7 +68,6 @@ button:disabled {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
-canvas:focus-visible,
 [role="option"]:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
@@ -101,7 +100,7 @@ svg {
     font-size: 13px;
 }
 
-/* ── 应用外壳：标题栏与画框 ─────────────────────────────── */
+/* ── 应用外壳：自绘标题栏与画框 ─────────────────────────── */
 .app-shell {
     height: 100dvh;
     min-width: 960px;
@@ -109,49 +108,95 @@ svg {
     display: flex;
     flex-direction: column;
 }
+/* 自绘标题栏：任务栏开关 + 菜单 + 窗口按钮 */
 .app-titlebar {
+    position: relative;
     height: 40px;
     min-height: 40px;
     flex: none;
     display: flex;
     align-items: center;
-    gap: 20px;
-    padding: 0 20px;
+    gap: 2px;
+    background: var(--frame);
     user-select: none;
 }
-.brand {
+.titlebar-drag {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+}
+.titlebar-toggle {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin-left: 6px;
+    border-radius: 5px;
+    color: var(--muted);
     flex: none;
-    color: var(--accent);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.35px;
 }
-.brand strong {
+.titlebar-history {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    margin: 0 4px 0 1px;
+    flex: none;
+}
+.titlebar-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 5px;
+    color: var(--muted);
+    flex: none;
+}
+.titlebar-action:not(:disabled):hover {
     color: var(--ink);
 }
 .app-menubar {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
 }
-.app-caption {
+.window-controls {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: stretch;
+    height: 100%;
     margin-left: auto;
-    color: var(--muted);
-    font-size: 13px;
-    white-space: nowrap;
+}
+.window-control {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 100%;
+    color: var(--ink);
+    flex: none;
+}
+.window-control.close:not(:disabled):hover {
+    background: #c42b1c;
+    color: #fff;
 }
 .app-menu {
     position: relative;
     z-index: 30;
 }
 .app-menu summary {
-    min-height: 29px;
+    min-height: 30px;
     display: flex;
     align-items: center;
-    padding: 0 9px;
+    padding: 0 10px;
     border-radius: 5px;
     list-style: none;
     cursor: pointer;
@@ -182,6 +227,20 @@ svg {
     position: absolute;
     top: calc(100% + 5px);
     left: 0;
+}
+/* 菜单切换时给一点出现反馈；切换本身由 TitleBar 保证同一时间只开一个菜单。 */
+.app-menu[open] .menu-popup {
+    animation: menu-popup-in 0.12s ease-out;
+}
+@keyframes menu-popup-in {
+    from {
+        opacity: 0;
+        transform: translateY(-3px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 .menu-popup button,
 .context-menu button {
@@ -223,8 +282,33 @@ svg {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+    grid-template-columns: var(--sidebar-width) 6px minmax(0, 1fr);
     padding: 0 8px 8px 0;
+    transition:
+        grid-template-columns 0.2s ease,
+        padding-left 0.2s ease;
+}
+.app-layout.sidebar-collapsed {
+    grid-template-columns: 0 0 minmax(0, 1fr);
+    padding-left: 8px;
+}
+.app-layout.sidebar-collapsed .task-sidebar {
+    padding: 0;
+    overflow: hidden;
+    opacity: 0;
+    visibility: hidden;
+}
+.app-layout.sidebar-collapsed .sidebar-resizer {
+    visibility: hidden;
+    pointer-events: none;
+}
+body.is-resizing-sidebar,
+body.is-resizing-sidebar * {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+body.is-resizing-sidebar .app-layout {
+    transition: none;
 }
 
 /* ── 任务侧栏 ──────────────────────────────────────────── */
@@ -234,6 +318,108 @@ svg {
     min-height: 0;
     min-width: 0;
     padding: 16px 12px 0;
+    transition:
+        opacity 0.15s ease,
+        padding 0.2s ease;
+}
+/* 拖动分隔条：默认只显示一条 hover 线，键盘聚焦时同样可见。 */
+.sidebar-resizer {
+    position: relative;
+    width: 6px;
+    align-self: stretch;
+    z-index: 2;
+    cursor: col-resize;
+    touch-action: none;
+    outline: none;
+}
+.sidebar-resizer::after {
+    content: "";
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 2px;
+    width: 2px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background-color 0.12s ease;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer.resizing::after,
+.sidebar-resizer:focus-visible::after {
+    background: var(--accent-line);
+}
+.sidebar-resizer:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: 3px;
+}
+/* 无边框窗口的边缘缩放热区：只在窗口最外侧 4-8px 生效。 */
+.window-resize-handles {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    pointer-events: none;
+}
+.window-resize-handle {
+    position: absolute;
+    pointer-events: auto;
+    touch-action: none;
+}
+.window-resize-handle.n {
+    top: 0;
+    left: 8px;
+    right: 8px;
+    height: 4px;
+    cursor: ns-resize;
+}
+.window-resize-handle.s {
+    bottom: 0;
+    left: 8px;
+    right: 8px;
+    height: 4px;
+    cursor: ns-resize;
+}
+.window-resize-handle.w {
+    top: 8px;
+    bottom: 8px;
+    left: 0;
+    width: 4px;
+    cursor: ew-resize;
+}
+.window-resize-handle.e {
+    top: 8px;
+    bottom: 8px;
+    right: 0;
+    width: 4px;
+    cursor: ew-resize;
+}
+.window-resize-handle.nw {
+    top: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nwse-resize;
+}
+.window-resize-handle.ne {
+    top: 0;
+    right: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nesw-resize;
+}
+.window-resize-handle.sw {
+    bottom: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nesw-resize;
+}
+.window-resize-handle.se {
+    right: 0;
+    bottom: 0;
+    width: 8px;
+    height: 8px;
+    cursor: nwse-resize;
 }
 .new-task-button {
     height: 36px;
@@ -242,7 +428,7 @@ svg {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    margin: 0 4px 22px;
+    margin: 0 0 22px;
     padding: 0 12px;
     border: 1px solid var(--control);
     border-radius: var(--radius);
@@ -250,9 +436,7 @@ svg {
     font-weight: 500;
 }
 .task-section-label {
-    display: flex;
-    justify-content: space-between;
-    padding: 0 12px 9px;
+    padding: 0 10px 9px;
     color: var(--muted);
     font-size: 13px;
 }
@@ -263,27 +447,17 @@ svg {
     display: flex;
     flex-direction: column;
     gap: 3px;
+    padding-bottom: 12px;
     scrollbar-width: thin;
     scrollbar-color: var(--control) transparent;
 }
 .task-icon {
     display: flex;
     align-items: center;
-    color: var(--muted);
+    justify-content: center;
     flex: none;
-}
-.task-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-    min-width: 0;
-}
-.task-sidebar-footer {
-    flex: none;
-    margin-top: auto;
-    padding: 14px 12px 5px;
-    font-size: 13px;
+    width: 18px;
+    height: 18px;
     color: var(--muted);
 }
 
@@ -302,11 +476,22 @@ svg {
     height: 64px;
     min-height: 64px;
     flex: none;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
-    gap: 12px;
+    gap: 16px;
     padding: 0 24px;
     border-bottom: 1px solid var(--rule);
+}
+.task-header-left,
+.task-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.task-header-right {
+    justify-content: flex-end;
 }
 .task-heading {
     min-width: 0;
@@ -327,22 +512,10 @@ svg {
 .task-toolbar {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     flex: none;
-}
-.task-more summary {
-    min-height: 30px;
-    padding: 0;
-    border-radius: 5px;
-    color: var(--muted);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-}
-.task-more .menu-popup {
-    left: auto;
-    right: 0;
+    justify-self: center;
 }
 
 /* ── 按钮体系 ──────────────────────────────────────────── */
@@ -438,23 +611,91 @@ svg {
     margin: 0 1px;
     flex: none;
 }
-.loop-field {
+.run-options .run-count {
     display: flex;
     align-items: center;
-    gap: 6px;
-    white-space: nowrap;
+    justify-content: center;
+    gap: 4px;
+    min-width: 34px;
+    min-height: 30px;
+    padding: 0 7px;
+    font-size: 13px;
     color: var(--muted);
+    white-space: nowrap;
+}
+.run-options .run-count strong {
+    font: 13px var(--figures);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+}
+.run-options .menu-popup {
+    left: auto;
+    right: 0;
+    min-width: 248px;
+    padding: 8px;
+}
+.run-mode-options {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.run-options .run-mode-option {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto 16px;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 6px 7px;
+    border-radius: 4px;
+    text-align: left;
+    color: var(--ink);
     font-size: 13px;
 }
-.loop-field input {
-    width: 62px;
-    height: 30px;
+.run-options .run-mode-option > svg {
+    color: var(--muted);
+}
+.run-options .run-mode-option[aria-pressed="true"] {
+    background: var(--active);
+}
+.run-options .run-mode-option[aria-pressed="true"] > svg {
+    color: var(--accent);
+}
+.run-mode-mark {
+    color: var(--muted);
+    font: 12px var(--figures);
+    font-variant-numeric: tabular-nums;
+}
+.run-mode-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+}
+.run-count-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    padding: 0 2px;
+    font-size: 13px;
+    color: var(--muted);
+}
+.run-count-field input {
+    width: 100%;
+    height: 32px;
     padding: 0 8px;
     border: 1px solid var(--control);
     border-radius: 5px;
     background: var(--surface);
-    font: 14px var(--figures);
+    color: var(--ink);
+    font: 13px var(--figures);
     font-variant-numeric: tabular-nums;
+}
+.run-count-field input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
 }
 .record-dot {
     width: 7px;
@@ -642,6 +883,9 @@ svg {
     color: var(--muted);
     margin-bottom: 3px;
 }
+.empty-task-icon svg {
+    stroke-width: 1.3;
+}
 .empty-task-message h2 {
     font-size: 20px;
     font-weight: 500;
@@ -750,6 +994,10 @@ svg {
     color: var(--muted);
     cursor: pointer;
 }
+.speed-select:focus {
+    outline: none;
+    background: var(--active);
+}
 
 /* ── 录制内容面板 ──────────────────────────────────────── */
 .actions-panel {
@@ -792,18 +1040,20 @@ svg {
     scrollbar-color: var(--control) transparent;
     outline: none;
 }
+/* 动作行保持一行：左边一句“做了什么”，坐标或内容作为次级参数紧跟在后面（FR-06）。 */
 .event-row {
     position: relative;
     display: flex;
     align-items: center;
     gap: 9px;
     width: 100%;
-    min-height: 62px;
+    min-height: 46px;
     margin-bottom: 2px;
-    padding: 9px;
-    border-radius: 6px;
+    padding: 0 9px;
+    border-radius: 7px;
     cursor: pointer;
     user-select: none;
+    transition: background-color 0.12s ease;
 }
 .event-row:hover {
     background: var(--raised);
@@ -826,6 +1076,7 @@ svg {
     justify-content: center;
     flex: none;
     width: 18px;
+    height: 18px;
     color: var(--muted);
 }
 .event-row.selected .event-icon {
@@ -833,12 +1084,14 @@ svg {
 }
 .event-copy {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: baseline;
+    gap: 8px;
     flex: 1;
     min-width: 0;
 }
 .event-title {
+    flex: none;
+    max-width: 100%;
     font-size: 14px;
     font-weight: 500;
     line-height: 1.4;
@@ -846,20 +1099,30 @@ svg {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.event-detail {
-    font-size: 13px;
+.event-value {
+    flex: 0 1 auto;
+    min-width: 0;
+    font: 13px var(--figures);
+    font-variant-numeric: tabular-nums;
     line-height: 1.4;
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.event-row[data-tone="input"] .event-value {
+    font-family: var(--font);
+    font-weight: 500;
+    color: var(--accent);
+}
 .event-time {
     flex: none;
-    font: 13px var(--figures);
+    margin-left: auto;
+    font: 12px var(--figures);
     font-variant-numeric: tabular-nums;
     color: var(--muted);
     white-space: nowrap;
+    transition: opacity 0.12s ease;
 }
 .list-note {
     padding: 20px 12px;
@@ -875,7 +1138,7 @@ svg {
     background: var(--surface);
 }
 .timeline-heading {
-    height: 40px;
+    height: 32px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -939,30 +1202,6 @@ svg {
     width: 100%;
     touch-action: none;
     cursor: crosshair;
-}
-.timeline-tooltip {
-    position: absolute;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-width: 270px;
-    padding: 7px 10px;
-    background: var(--surface);
-    border: 1px solid #d7dde0;
-    border-radius: 6px;
-    box-shadow: 0 5px 18px #2027291f;
-    font-size: 13px;
-    pointer-events: none;
-    overflow-wrap: anywhere;
-}
-.timeline-tooltip strong {
-    font-weight: 500;
-}
-.timeline-tooltip span {
-    color: var(--muted);
-    font: 12px var(--figures);
-    font-variant-numeric: tabular-nums;
 }
 
 /* ── 对话框 ────────────────────────────────────────────── */
@@ -1139,6 +1378,9 @@ svg {
 
 /* ── 演示练习区 ────────────────────────────────────────── */
 .startup-screen {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
     padding: 48px;
     max-width: 700px;
     overflow-wrap: anywhere;
@@ -1153,24 +1395,34 @@ svg {
     display: flex;
     align-items: center;
     width: 100%;
-    min-height: 42px;
-    border-radius: 6px;
+    min-height: 44px;
+    border-radius: 8px;
+    transition: background-color 0.12s ease;
 }
 .task-row:hover {
     background: #e9ebec;
 }
 .task-row.selected {
-    background: var(--active);
+    background: var(--surface);
+    box-shadow:
+        0 0 0 1px var(--line),
+        0 1px 2px #2027290f;
+}
+.task-row.selected:hover {
+    background: var(--surface);
+}
+.task-row.selected .task-icon {
+    color: var(--accent);
 }
 .task-select {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
     flex: 1;
     min-width: 0;
-    min-height: 42px;
-    padding: 8px 11px;
-    border-radius: 6px;
+    min-height: 44px;
+    padding: 0 10px;
+    border-radius: 8px;
     text-align: left;
 }
 .task-select:hover {
@@ -1178,7 +1430,10 @@ svg {
 }
 .task-name {
     display: block;
+    flex: 1;
+    min-width: 0;
     font-size: 14px;
+    color: var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1188,39 +1443,11 @@ svg {
 }
 .task-meta {
     display: block;
-    font: 13px var(--figures);
+    flex: none;
+    font: 12px var(--figures);
     font-variant-numeric: tabular-nums;
     color: var(--muted);
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.task-row .task-more {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 28px;
-    flex: none;
-    margin-right: 5px;
-    border-radius: 4px;
-    color: var(--muted);
-    opacity: 0;
-}
-.task-row:hover .task-more,
-.task-row.selected .task-more,
-.task-row:focus-within .task-more {
-    opacity: 1;
-}
-.task-row .task-more summary {
-    width: 26px;
-    min-height: 28px;
-    padding: 0;
-}
-.task-row .task-more .menu-popup {
-    left: auto;
-    right: 0;
-    top: calc(100% + 4px);
 }
 .demo-back {
     margin-left: -7px;
@@ -1243,26 +1470,6 @@ svg {
 .button.subtle[aria-expanded="true"] {
     color: var(--ink);
     background: var(--active);
-}
-.event-more {
-    position: absolute;
-    right: 4px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 26px;
-    height: 28px;
-    border-radius: 4px;
-    background: var(--raised);
-    color: var(--muted);
-    opacity: 0;
-}
-.event-row:hover .event-more,
-.event-row:focus-within .event-more {
-    opacity: 1;
-}
-.event-row:hover .event-time,
-.event-row:focus-within .event-time {
-    opacity: 0;
 }
 
 /* ── 编辑对话框表单 ────────────────────────────────────── */
@@ -1577,6 +1784,7 @@ svg {
 }
 .practice-success svg {
     color: #507868;
+    stroke-width: 1.2;
 }
 .practice-success strong {
     font-size: 30px;
@@ -2026,9 +2234,6 @@ svg {
         padding-left: 10px;
         padding-right: 10px;
     }
-    .loop-field input {
-        width: 52px;
-    }
     .preview-viewport {
         padding: 20px;
         --preview-inset: 20px;
@@ -2045,9 +2250,9 @@ svg {
         padding-right: 10px;
     }
     .event-row {
-        padding: 7px;
+        padding: 0 8px;
         gap: 7px;
-        min-height: 56px;
+        min-height: 44px;
     }
     .timeline {
         padding-left: 18px;
@@ -2081,9 +2286,7 @@ svg {
         height: 36px;
     }
     .event-row {
-        min-height: 56px;
-        padding-top: 7px;
-        padding-bottom: 7px;
+        min-height: 44px;
     }
     .actions-heading {
         height: 44px;

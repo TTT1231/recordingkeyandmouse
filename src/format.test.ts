@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeEvent, formatDurationUs, vkName, wheelSteps } from "./format";
+import { describeEvent, formatDurationUs, formatTimelineTick, vkName, wheelSteps } from "./format";
 
 describe("formatDurationUs", () => {
     it("短时间显示毫秒", () => {
@@ -19,6 +19,20 @@ describe("formatDurationUs", () => {
 
     it("负数按 0 处理", () => {
         expect(formatDurationUs(-5)).toBe("0s");
+    });
+});
+
+describe("formatTimelineTick", () => {
+    it("整秒刻度使用两位 mm:ss", () => {
+        expect(formatTimelineTick(0)).toBe("00:00");
+        expect(formatTimelineTick(1_000_000)).toBe("00:01");
+        expect(formatTimelineTick(61_000_000)).toBe("01:01");
+        expect(formatTimelineTick(3_600_000_000)).toBe("60:00");
+    });
+
+    it("负数和亚秒按当前整秒处理", () => {
+        expect(formatTimelineTick(-5)).toBe("00:00");
+        expect(formatTimelineTick(1_900_000)).toBe("00:01");
     });
 });
 

@@ -117,7 +117,7 @@ impl Action {
         let (title, detail, editable) = match &self.kind {
             ActionKind::Move { x, y } => (
                 "鼠标移动".into(),
-                format!("{duration:.0} 毫秒 · 移至 ({x}, {y})"),
+                format!("({x}, {y}) · {duration:.0} 毫秒"),
                 true,
             ),
             ActionKind::Click {
@@ -127,16 +127,16 @@ impl Action {
                 y,
             } => (
                 format!(
-                    "{}（{}）",
-                    if *count == 2 { "双击" } else { "单击" },
-                    button.display()
+                    "{}{}",
+                    button.display(),
+                    if *count == 2 { "双击" } else { "单击" }
                 ),
-                format!("({}, {})", x, y),
+                format!("({x}, {y})"),
                 !matches!(button, MouseButton::X1 | MouseButton::X2),
             ),
             ActionKind::Drag { button, x, y } => (
-                format!("按住{}拖动", button.display()),
-                format!("{duration:.0} 毫秒 · 至 ({x}, {y}) · 保留原始拖拽"),
+                format!("{}拖拽", button.display()),
+                format!("至 ({x}, {y}) · {duration:.0} 毫秒"),
                 false,
             ),
             ActionKind::Wheel { axis, delta, .. } => {
@@ -147,11 +147,8 @@ impl Action {
                     _ => "向左",
                 };
                 (
-                    "鼠标滚轮".into(),
-                    format!(
-                        "{direction} {:.2} 格 · 1 格 = 120 原生增量",
-                        delta.unsigned_abs() as f64 / 120.0
-                    ),
+                    format!("{direction}滚动 {} 格", wheel_steps(*delta)),
+                    "1 格 = 120 原生增量".into(),
                     *axis == WheelAxis::Vertical,
                 )
             }
@@ -171,9 +168,9 @@ impl Action {
                     .len()
                     .saturating_sub(downs.iter().collect::<BTreeSet<_>>().len());
                 let detail = if repeats > 0 {
-                    format!("按键 {chord} · 含 {repeats} 次重复按下")
+                    format!("按下 {chord} · 含 {repeats} 次重复按下")
                 } else {
-                    format!("按键 {chord}")
+                    format!("按下 {chord}")
                 };
                 ("键盘输入".into(), detail, true)
             }
@@ -198,6 +195,16 @@ impl Action {
             event_count: self.events.len(),
             editable,
         }
+    }
+}
+
+/// 滚轮格数：整格不写小数，其余保留一位小数（与界面操作列表一致）。
+fn wheel_steps(delta: i32) -> String {
+    let steps = delta.unsigned_abs() as f64 / 120.0;
+    if steps.fract() == 0.0 {
+        format!("{steps:.0}")
+    } else {
+        format!("{steps:.1}")
     }
 }
 
@@ -468,6 +475,30 @@ impl TaskDocument {
                 self.closed_boundary_at(old_end, Some(0))?;
                 self.shift_after(old_end, delta, Some(&action_id), Some(0))?;
                 self.actions[i].end_us = add_time(self.actions[i].start_us, duration_us)?;
+            }
+            EditRequest::DeleteAction { action_id } => {
+                let i = self.action_index(&action_id)?;
+                let action = self.actions[i].clone();
+                if matches!(action.kind, ActionKind::Wait) {
+                    let wait_duration = action.end_us - action.start_us;
+                    if wait_duration <= 0 {
+                        return Err("等待时长无效".into());
+                    }
+                    if self.actions.iter().any(|a| {
+                        a.id != action_id
+                            && a.start_us > action.start_us
+                            && a.start_us < action.end_us
+                    }) {
+                        return Err("等待区间内还有其他动作，不能删除".into());
+                    }
+                    // 等待是用户插入的空档：删除后让后续动作整体提前，原停顿保留。
+                    self.actions.remove(i);
+                    self.shift_after(action.end_us, -wait_duration, None, Some(0))?;
+                } else {
+                    // 录制输入不从时间轴补洞，后续动作时间保持不变；只校验键鼠配对。
+                    self.actions.remove(i);
+                }
+                validate_balanced(&self.compile())?;
             }
             EditRequest::UpdateMove {
                 action_id,
@@ -792,6 +823,9 @@ pub enum EditRequest {
     UpdateWait {
         action_id: String,
         duration_us: i64,
+    },
+    DeleteAction {
+        action_id: String,
     },
     UpdateMove {
         action_id: String,

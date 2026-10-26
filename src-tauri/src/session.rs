@@ -19,6 +19,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+/// u32::MAX 是“无限循环”的调度哨兵；只能由停止按钮或停止热键结束。
+pub const INFINITE_ROUNDS: u32 = u32::MAX;
+
 struct RecordingLive {
     gestures: crate::document::GestureSettings,
     buffer: Arc<Mutex<RecordingBuffer>>,
@@ -640,8 +643,8 @@ impl AppSession {
         revision: u64,
         rounds: u32,
     ) -> Result<(), String> {
-        if !(1..=100_000).contains(&rounds) {
-            return Err("循环次数应为 1–100000 的整数".into());
+        if !(1..=100_000).contains(&rounds) && rounds != INFINITE_ROUNDS {
+            return Err("执行次数应为 1–100000 的整数，或无限循环".into());
         }
         let previous = self.executor.lock().unwrap().take();
         if let Some(handle) = previous {

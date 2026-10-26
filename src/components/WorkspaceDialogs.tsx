@@ -215,7 +215,7 @@ export function ShortcutsDialog(p: {
                 <div className="shortcut-list">
                     <div>
                         <span>撤销 / 重做</span>
-                        <kbd>Ctrl+Z / Ctrl+Shift+Z</kbd>
+                        <kbd>Ctrl+Z / Ctrl+Y</kbd>
                     </div>
                     <div>
                         <span>编辑选中动作</span>

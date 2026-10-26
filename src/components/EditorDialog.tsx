@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { actionLabel } from "../actionLabel";
 import { buildEditRequest, type EditorTarget } from "../editor";
 import type { EditRequest, MouseButton } from "../types";
 import { Icon } from "./Icon";
@@ -42,7 +43,7 @@ export function Modal({
                 {icon && <span className="dialog-type-icon">{icon}</span>}
                 <h2>{title}</h2>
                 <button type="button" className="icon-button" aria-label="关闭对话框" onClick={onClose}>
-                    ×
+                    <Icon name="x" size={18} />
                 </button>
             </div>
             {children}
@@ -59,12 +60,9 @@ interface Props {
     onClose: () => void;
     onSave: (edit: EditRequest) => void;
 }
-function iconFor(type: string | undefined) {
-    if (type === "wait") return "clock";
-    if (type === "keys" || type === "text") return "keyboard";
-    if (type === "move" || type === "drag") return "cursor";
-    if (type === "click" || type === "wheel") return "mouse";
-    return "record";
+function dialogIcon(target: EditorTarget): string {
+    if (target.action) return actionLabel(target.action).icon;
+    return target.insert === "wait" ? "clock" : "keyboard";
 }
 export function EditorDialog(p: Props) {
     const action = p.target.action,
@@ -115,7 +113,12 @@ export function EditorDialog(p: Props) {
         </>
     );
     return (
-        <Modal title={title} onClose={p.onClose} open={!p.picking} icon={<Icon name={iconFor(type)} size={19} />}>
+        <Modal
+            title={title}
+            onClose={p.onClose}
+            open={!p.picking}
+            icon={<Icon name={dialogIcon(p.target)} size={19} />}
+        >
             <form
                 className="dialog-form editor-form"
                 onSubmit={e => {

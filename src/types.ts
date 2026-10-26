@@ -113,6 +113,7 @@ export type EditRequest =
     | { op: "insertWait"; afterAction: string | null; durationUs: number }
     | { op: "insertText"; afterAction: string | null; text: string }
     | { op: "updateWait"; actionId: string; durationUs: number }
+    | { op: "deleteAction"; actionId: string }
     | { op: "updateMove"; actionId: string; x: number; y: number; durationUs: number; linkNextClick: boolean }
     | { op: "updateClick"; actionId: string; x: number; y: number; button: MouseButton; count: number }
     | { op: "updateWheel"; actionId: string; delta: number }

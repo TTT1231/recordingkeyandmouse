@@ -693,6 +693,20 @@ mod tests {
     }
 
     #[test]
+    fn infinite_rounds_run_until_the_stop_signal() {
+        let events = vec![ev(1, 0, key(0x41, true)), ev(2, 100_000, key(0x41, false))];
+        // u32::MAX 是 UI 的无限循环哨兵；这里只验证第二轮能被停止信号截断，
+        // 不会把哨兵当成非法轮数，也不会等待 40 亿轮结束。
+        let spec = spec_of(events, 200_000, u32::MAX);
+        let stop = StopSignal::new();
+        let mut driver = MockDriver::new(stop.clone());
+        driver.cancel_at = Some(driver.now + Duration::from_millis(300));
+        let outcome = run_replay(&spec, &mut driver, &stop, LATE_THRESHOLD, |_| {});
+        assert!(outcome.stopped);
+        assert_eq!(outcome.rounds_requested, u32::MAX);
+        assert_eq!(outcome.rounds_completed, 1);
+    }
+    #[test]
     fn validate_recording_rejects_bad_order_and_negative_time() {
         assert!(validate_recording(&[], 0).is_ok());
         let good = vec![ev(1, 0, key(0x41, true)), ev(2, 10, key(0x41, false))];

@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import * as api from "./api";
 import { actionAtTime } from "./actions";
 import { ActionsPanel } from "./components/ActionsPanel";
 import { EditorDialog, Modal, type EditorTarget } from "./components/EditorDialog";
-import { MenuBar } from "./components/MenuBar";
+import { SidebarResizer } from "./components/SidebarResizer";
 import { TaskSidebar } from "./components/TaskSidebar";
 import { TaskToolbar } from "./components/TaskToolbar";
 import { Timeline } from "./components/Timeline";
+import { TitleBar, WindowControls } from "./components/TitleBar";
 import { ViewerArea } from "./components/ViewerArea";
+import { WindowResizeHandles } from "./components/WindowResizeHandles";
+import { INFINITE_ROUNDS, repeatRounds, type RepeatMode } from "./repeat";
 import { GuideDialog, NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/WorkspaceDialogs";
 import { vkName } from "./format";
+import { SIDEBAR_DEFAULT, SIDEBAR_OPEN_KEY, SIDEBAR_WIDTH_KEY, clampSidebarWidth } from "./layout";
 import type { ActionView, EditRequest, SessionSnapshot, WorkspaceView } from "./types";
 import "./App.css";
 type Dialog =
@@ -17,6 +21,21 @@ type Dialog =
     | { type: "record" | "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" }
     | { type: "tour"; enterDemo: boolean }
     | null;
+function readSidebarWidth(): number {
+    try {
+        const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+        return clampSidebarWidth(Number.isFinite(stored) && stored > 0 ? stored : SIDEBAR_DEFAULT, window.innerWidth);
+    } catch {
+        return clampSidebarWidth(SIDEBAR_DEFAULT, window.innerWidth);
+    }
+}
+function readSidebarOpen(): boolean {
+    try {
+        return window.localStorage.getItem(SIDEBAR_OPEN_KEY) !== "0";
+    } catch {
+        return true;
+    }
+}
 export default function App() {
     const [workspace, setWorkspace] = useState<WorkspaceView | null>(null),
         [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null),
@@ -26,9 +45,12 @@ export default function App() {
         [playing, setPlaying] = useState(false),
         [speed, setSpeed] = useState(1),
         [selectedId, setSelectedId] = useState<string | null>(null),
-        [loopCount, setLoopCount] = useState("10");
+        [loopCount, setLoopCount] = useState("10"),
+        [repeatMode, setRepeatMode] = useState<RepeatMode>("once");
     const [actionsOpen, setActionsOpen] = useState(true),
         [timelineOpen, setTimelineOpen] = useState(true),
+        [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen),
+        [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth),
         [dialog, setDialog] = useState<Dialog>(null),
         [picking, setPicking] = useState(false),
         [pickedPoint, setPickedPoint] = useState<{ x: number; y: number } | null>(null),
@@ -120,8 +142,39 @@ export default function App() {
         return () => clearTimeout(timer);
     }, [toast]);
     useEffect(() => {
+        const timer = window.setTimeout(() => {
+            try {
+                window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+            } catch {
+                // 本地存储不可用时宽度只在本次会话内生效。
+            }
+        }, 200);
+        return () => window.clearTimeout(timer);
+    }, [sidebarWidth]);
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(SIDEBAR_OPEN_KEY, sidebarOpen ? "1" : "0");
+        } catch {
+            // 同上。
+        }
+    }, [sidebarOpen]);
+    useEffect(() => {
+        const keepInBounds = () => setSidebarWidth(current => clampSidebarWidth(current, window.innerWidth));
+        window.addEventListener("resize", keepInBounds);
+        return () => window.removeEventListener("resize", keepInBounds);
+    }, []);
+    useEffect(() => {
         const close = (event: MouseEvent) => {
             const target = event.target instanceof Element ? event.target : null;
+            // 菜单/重复方式弹层互斥：打开一个时关闭其余，避免叠在一起。
+            const summary = target?.closest("summary");
+            if (summary?.parentElement instanceof HTMLDetailsElement) {
+                globalThis.document.querySelectorAll<HTMLDetailsElement>("details.app-menu[open]").forEach(node => {
+                    if (node !== summary.parentElement) node.open = false;
+                });
+                return;
+            }
+            if (target?.closest("details.run-options")) return;
             if (target?.closest("details.app-menu") && !target.closest("button")) return;
             globalThis.document.querySelectorAll<HTMLDetailsElement>("details.app-menu[open]").forEach(node => {
                 node.open = false;
@@ -131,10 +184,10 @@ export default function App() {
         return () => window.removeEventListener("click", close);
     }, []);
     const run = useCallback(
-        async (operation: () => Promise<WorkspaceView | SessionSnapshot | void>) => {
+        async (operation: () => Promise<WorkspaceView | SessionSnapshot | void>, quiet = false) => {
             if (mutating.current) return false;
             mutating.current = true;
-            setBusy(true);
+            if (!quiet) setBusy(true);
             setError(null);
             try {
                 const result = await operation();
@@ -146,7 +199,7 @@ export default function App() {
                 return false;
             } finally {
                 mutating.current = false;
-                if (mounted.current) setBusy(false);
+                if (!quiet && mounted.current) setBusy(false);
             }
         },
         [acceptWorkspace, acceptSnapshot],
@@ -295,17 +348,23 @@ export default function App() {
     }, [playing, timeUs]);
     if (!workspace || !document || !session)
         return (
-            <div className="startup-screen">
-                <h1>Repeat</h1>
-                <p>{error ? "本地任务未能载入" : "正在载入本地任务…"}</p>
-                {error && (
-                    <>
-                        <p role="alert">{error}</p>
-                        <button type="button" className="button" onClick={() => void refresh()}>
-                            重试
-                        </button>
-                    </>
-                )}
+            <div className="app-shell">
+                <header className="app-titlebar">
+                    <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
+                    <WindowControls />
+                </header>
+                <div className="startup-screen">
+                    <h1>Repeat</h1>
+                    <p>{error ? "本地任务未能载入" : "正在载入本地任务…"}</p>
+                    {error && (
+                        <>
+                            <p role="alert">{error}</p>
+                            <button type="button" className="button" onClick={() => void refresh()}>
+                                重试
+                            </button>
+                        </>
+                    )}
+                </div>
             </div>
         );
     const shownDocument =
@@ -321,28 +380,24 @@ export default function App() {
     const errorText = error ?? session.lastError;
     return (
         <div className="app-shell">
-            <header className="app-titlebar">
-                <MenuBar
-                    snapshot={session}
-                    busy={busy}
-                    actionsOpen={actionsOpen}
-                    timelineOpen={timelineOpen}
-                    hasSelection={!!selected}
-                    onToggleActions={() => setActionsOpen(value => !value)}
-                    onToggleTimeline={() => setTimelineOpen(value => !value)}
-                    onCreate={() => openDialog({ type: "create" })}
-                    onRename={() => openDialog({ type: "rename" })}
-                    onUndo={() => changeHistory(false)}
-                    onRedo={() => changeHistory(true)}
-                    onEdit={() => selected && editAction(selected)}
-                    onWait={() => insert("wait", selectedId)}
-                    onText={() => insert("text", selectedId)}
-                    onDemo={() => openDialog({ type: "tour", enterDemo: true })}
-                    onTour={() => openDialog({ type: "tour", enterDemo: true })}
-                    onShortcuts={() => openDialog({ type: "shortcuts" })}
-                    onAbout={() => openDialog({ type: "about" })}
-                />
-            </header>
+            <TitleBar
+                snapshot={session}
+                busy={busy}
+                actionsOpen={actionsOpen}
+                timelineOpen={timelineOpen}
+                sidebarOpen={sidebarOpen}
+                onToggleSidebar={() => setSidebarOpen(value => !value)}
+                onToggleActions={() => setActionsOpen(value => !value)}
+                onToggleTimeline={() => setTimelineOpen(value => !value)}
+                onCreate={() => openDialog({ type: "create" })}
+                onRename={() => openDialog({ type: "rename" })}
+                onUndo={() => changeHistory(false)}
+                onRedo={() => changeHistory(true)}
+                onDemo={() => openDialog({ type: "tour", enterDemo: true })}
+                onTour={() => openDialog({ type: "tour", enterDemo: true })}
+                onShortcuts={() => openDialog({ type: "shortcuts" })}
+                onAbout={() => openDialog({ type: "about" })}
+            />
             {errorText && (
                 <div className="error-bar" role="alert">
                     <span>{errorText}</span>
@@ -390,34 +445,42 @@ export default function App() {
                     </button>
                 </div>
             )}
-            <div className="app-layout">
+            <div
+                className={`app-layout${sidebarOpen ? "" : " sidebar-collapsed"}`}
+                style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+            >
                 <TaskSidebar
                     snapshot={session}
                     document={document}
                     tasks={workspace.tasks}
                     disabled={locked}
+                    collapsed={!sidebarOpen}
                     onCreate={() => openDialog({ type: "create" })}
-                    onSelect={id => void run(() => api.selectTask(id))}
+                    onSelect={id => {
+                        if (id === session.taskId) return;
+                        void run(() => api.selectTask(id), true);
+                    }}
                     onRename={() => openDialog({ type: "rename" })}
                     onDelete={() => openDialog({ type: "delete" })}
                 />
+                <SidebarResizer width={sidebarWidth} collapsed={!sidebarOpen} onChange={setSidebarWidth} />
                 <main className={`task-workspace${empty ? " empty-task" : ""}`}>
                     <TaskToolbar
                         snapshot={session}
                         document={document}
+                        repeatMode={repeatMode}
                         loopCount={loopCount}
                         busy={busy}
                         empty={empty}
-                        actionsOpen={actionsOpen}
-                        onToggleActions={() => setActionsOpen(value => !value)}
+                        onRepeatModeChange={setRepeatMode}
                         onLoopCountChange={setLoopCount}
                         onStartRecording={() => openDialog({ type: "record" })}
                         onStopRecording={gesture => void run(() => api.stopRecording(gesture))}
                         onCancelRecording={() => void run(() => api.cancelRecording(document))}
                         onStartExecution={() => {
-                            const rounds = Number(loopCount);
-                            if (!Number.isInteger(rounds) || rounds < 1 || rounds > 100000) {
-                                setError("循环次数应为 1–100000 的整数");
+                            const rounds = repeatRounds(repeatMode, loopCount);
+                            if (rounds === null) {
+                                setError("执行次数应为 1–100000 的整数");
                                 return;
                             }
                             setPlaying(false);
@@ -430,9 +493,6 @@ export default function App() {
                             setPlaying(true);
                         }}
                         onResetDemo={() => void run(() => api.demoMode(true))}
-                        onRename={() => openDialog({ type: "rename" })}
-                        onDelete={() => openDialog({ type: "delete" })}
-                        onReference={() => openDialog({ type: "reference" })}
                         onExitDemo={() => void run(() => api.demoMode(false))}
                     />
                     {mode === "recording" && (
@@ -449,8 +509,10 @@ export default function App() {
                     )}
                     {mode === "executing" && session.executionLive && (
                         <div className="executing-notice" role="status">
-                            第 {session.executionLive.currentRound} / {session.executionLive.roundsRequested} 轮 ·
-                            已执行 {session.executionLive.eventsInjected} 个输入
+                            {session.executionLive.roundsRequested === INFINITE_ROUNDS
+                                ? `无限循环 · 第 ${session.executionLive.currentRound} 轮`
+                                : `第 ${session.executionLive.currentRound} / ${session.executionLive.roundsRequested} 轮`}
+                            {" · "}已执行 {session.executionLive.eventsInjected} 个输入
                             {session.executionLive.stopRequested ? " · 正在停止…" : ""}
                         </div>
                     )}
@@ -497,6 +559,7 @@ export default function App() {
                                 onEdit={editAction}
                                 onInsertWait={after => insert("wait", after)}
                                 onInsertText={after => insert("text", after)}
+                                onDeleteAction={id => void saveEdit({ op: "deleteAction", actionId: id })}
                                 onCollapse={() => setActionsOpen(false)}
                             />
                         }
@@ -514,11 +577,11 @@ export default function App() {
                                 setTimeUs(time);
                                 setSelectedId(action?.id ?? actionAtTime(rows, time)?.id ?? null);
                             }}
-                            onEdit={editAction}
                         />
                     }
                 </main>
             </div>
+            <WindowResizeHandles />
             {toast && (
                 <div className="toast" role="status">
                     {toast}

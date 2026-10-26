@@ -31,12 +31,12 @@ export function formatShortClock(us: number): string {
     return formatClock(us).slice(0, -1);
 }
 
-/** 时间线刻度：原型使用 m:ss，整秒时不写毫秒。 */
+/** 时间线刻度：mm:ss，按整秒标注；精确时间由播放头与动作列表提供。 */
 export function formatTimelineTick(us: number): string {
-    const ms = Math.max(0, Math.round(us / 1000));
-    const base = `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
-    const rest = ms % 1000;
-    return rest ? `${base}.${String(rest).padStart(3, "0").replace(/0+$/, "")}` : base;
+    const total = Math.max(0, Math.floor(us / 1_000_000));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 /** 任务列表中的时长：原型写作“6.8 秒”，最多保留两位小数。 */

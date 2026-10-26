@@ -1,15 +1,16 @@
 import { formatClock, vkName } from "../format";
+import { repeatModeLabel, repeatSummary, type RepeatMode } from "../repeat";
 import type { DocumentView, SessionSnapshot } from "../types";
 import { Icon } from "./Icon";
 interface Props {
     snapshot: SessionSnapshot;
     document: DocumentView;
+    repeatMode: RepeatMode;
     loopCount: string;
     busy: boolean;
     empty: boolean;
-    actionsOpen: boolean;
+    onRepeatModeChange: (mode: RepeatMode) => void;
     onLoopCountChange: (value: string) => void;
-    onToggleActions: () => void;
     onStartRecording: () => void;
     onStopRecording: (gesture: string | null) => void;
     onCancelRecording: () => void;
@@ -17,10 +18,66 @@ interface Props {
     onStopExecution: () => void;
     onReplay: () => void;
     onResetDemo: () => void;
-    onRename: () => void;
-    onDelete: () => void;
-    onReference: () => void;
     onExitDemo: () => void;
+}
+function RunMode(p: {
+    mode: RepeatMode;
+    value: string;
+    disabled: boolean;
+    onChangeMode: (mode: RepeatMode) => void;
+    onChangeValue: (value: string) => void;
+}) {
+    const label = repeatModeLabel(p.mode, p.value);
+    const summary = repeatSummary(p.mode, p.value);
+    const options: { mode: RepeatMode; label: string; mark: string }[] = [
+        { mode: "infinite", label: "无限循环", mark: "∞" },
+        { mode: "once", label: "只执行一次", mark: "1" },
+        { mode: "count", label: "自定义次数", mark: p.value || "—" },
+    ];
+    return (
+        <details className="app-menu run-options">
+            <summary className="run-count" aria-label={`重复方式：${label}`}>
+                <Icon name="repeat" size={14} />
+                {summary && <strong>{summary}</strong>}
+            </summary>
+            <div className="menu-popup run-mode-popup">
+                <div className="run-mode-options" role="group" aria-label="重复方式">
+                    {options.map(option => (
+                        <button
+                            key={option.mode}
+                            type="button"
+                            className="run-mode-option"
+                            aria-pressed={p.mode === option.mode}
+                            disabled={p.disabled}
+                            onClick={() => p.onChangeMode(option.mode)}
+                        >
+                            <Icon name="repeat" size={14} />
+                            <span>{option.label}</span>
+                            <span className="run-mode-mark">{option.mark}</span>
+                            <span className="run-mode-check" aria-hidden="true">
+                                {p.mode === option.mode && <Icon name="check" size={14} />}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+                {p.mode === "count" && (
+                    <label className="run-count-field">
+                        执行次数
+                        <input
+                            type="number"
+                            min={1}
+                            max={100000}
+                            step={1}
+                            value={p.value}
+                            autoFocus
+                            disabled={p.disabled}
+                            onChange={event => p.onChangeValue(event.currentTarget.value)}
+                        />
+                    </label>
+                )}
+            </div>
+        </details>
+    );
 }
 export function TaskToolbar(p: Props) {
     const mode = p.snapshot.mode;
@@ -29,20 +86,22 @@ export function TaskToolbar(p: Props) {
     const demo = p.snapshot.isDemo;
     return (
         <header className="task-header" data-tour="record">
-            {demo && (
-                <button
-                    type="button"
-                    className="icon-button demo-back"
-                    title="返回任务"
-                    aria-label="返回任务"
-                    onClick={p.onExitDemo}
-                >
-                    <Icon name="arrowLeft" size={18} />
-                </button>
-            )}
-            <div className="task-heading">
-                <h1 title={p.document.name}>{p.document.name}</h1>
-                {demo && <span className="demo-caption">独立练习，不会改动你的任务</span>}
+            <div className="task-header-left">
+                {demo && (
+                    <button
+                        type="button"
+                        className="icon-button demo-back"
+                        title="返回任务"
+                        aria-label="返回任务"
+                        onClick={p.onExitDemo}
+                    >
+                        <Icon name="arrowLeft" size={18} />
+                    </button>
+                )}
+                <div className="task-heading">
+                    <h1 title={p.document.name}>{p.document.name}</h1>
+                    {demo && <span className="demo-caption">独立练习，不会改动你的任务</span>}
+                </div>
             </div>
             <div className="task-toolbar" role="toolbar" aria-label="当前任务操作">
                 {demo ? (
@@ -60,32 +119,9 @@ export function TaskToolbar(p: Props) {
                             <Icon name="play" />
                             回放
                         </button>
-                        <span className="toolbar-separator" />
-                        <button
-                            type="button"
-                            className="button subtle"
-                            aria-expanded={p.actionsOpen}
-                            onClick={p.onToggleActions}
-                        >
-                            <Icon name="layers" />
-                            录制内容
-                        </button>
-                        <details className="app-menu task-more">
-                            <summary aria-label="演示的更多操作">
-                                <Icon name="more" />
-                            </summary>
-                            <div className="menu-popup">
-                                <button type="button" onClick={p.onResetDemo}>
-                                    重置演示
-                                </button>
-                            </div>
-                        </details>
                     </>
                 ) : recording ? (
                     <>
-                        {p.snapshot.recordingLive && (
-                            <span className="record-counter">{formatClock(p.snapshot.recordingLive.elapsedUs)}</span>
-                        )}
                         <button
                             type="button"
                             className="button primary stop"
@@ -129,18 +165,6 @@ export function TaskToolbar(p: Props) {
                         {!p.empty && (
                             <>
                                 <span className="toolbar-separator" />
-                                <label className="loop-field" title="每轮保留原节奏，轮间不额外等待">
-                                    次数
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={100000}
-                                        step={1}
-                                        value={p.loopCount}
-                                        disabled={mode !== "idle"}
-                                        onChange={e => p.onLoopCountChange(e.currentTarget.value)}
-                                    />
-                                </label>
                                 {executing ? (
                                     <button type="button" className="button stop" onClick={p.onStopExecution}>
                                         <Icon name="pause" />
@@ -164,42 +188,27 @@ export function TaskToolbar(p: Props) {
                                         执行到系统
                                     </button>
                                 )}
-                                <span className="toolbar-separator" />
-                                <button
-                                    type="button"
-                                    className="button subtle"
-                                    aria-expanded={p.actionsOpen}
-                                    onClick={p.onToggleActions}
-                                >
-                                    <Icon name="layers" />
-                                    录制内容
-                                </button>
                             </>
                         )}
-                        <details className="app-menu task-more">
-                            <summary aria-label="任务的更多操作">
-                                <Icon name="more" />
-                            </summary>
-                            <div className="menu-popup">
-                                <button type="button" disabled={p.busy || mode !== "idle"} onClick={p.onRename}>
-                                    重命名任务
-                                </button>
-                                <button type="button" disabled={p.busy || mode !== "idle"} onClick={p.onReference}>
-                                    {p.document.referenceImage ? "更换预览背景" : "添加预览背景"}
-                                </button>
-                                <div className="menu-separator" />
-                                <button
-                                    type="button"
-                                    className="danger-text"
-                                    disabled={p.busy || mode !== "idle"}
-                                    onClick={p.onDelete}
-                                >
-                                    删除任务…
-                                </button>
-                            </div>
-                        </details>
                     </>
                 )}
+            </div>
+            <div className="task-header-right">
+                {demo ? (
+                    <button type="button" className="text-button" onClick={p.onResetDemo}>
+                        重置演示
+                    </button>
+                ) : recording && p.snapshot.recordingLive ? (
+                    <span className="record-counter">{formatClock(p.snapshot.recordingLive.elapsedUs)}</span>
+                ) : !p.empty && !recording && !executing ? (
+                    <RunMode
+                        mode={p.repeatMode}
+                        value={p.loopCount}
+                        disabled={mode !== "idle"}
+                        onChangeMode={p.onRepeatModeChange}
+                        onChangeValue={p.onLoopCountChange}
+                    />
+                ) : null}
             </div>
         </header>
     );

@@ -208,6 +208,77 @@ fn inserted_wait_moves_all_later_tracks_preserving_pauses_and_raw() {
     d.validate_execution().unwrap();
 }
 #[test]
+fn deleting_inserted_wait_restores_later_times() {
+    let mut d = doc(
+        vec![
+            (100_000, movement(1, 1)),
+            (500_000, down(L, 10, 20)),
+            (550_000, up(L, 10, 20)),
+            (800_000, down(L, 30, 40)),
+            (850_000, up(L, 30, 40)),
+        ],
+        1_000_000,
+    );
+    let raw = serde_json::to_string(&d.raw).unwrap();
+    let original_times: Vec<_> = d.compile().iter().map(|e| e.time_us).collect();
+    let after = d.actions[0].id.clone();
+    d.apply(EditRequest::InsertWait {
+        after_action: Some(after),
+        duration_us: 1_000_000,
+    })
+    .unwrap();
+    assert_eq!(d.duration_us, 2_000_000);
+    let wait = d
+        .actions
+        .iter()
+        .find(|a| matches!(a.kind, ActionKind::Wait))
+        .unwrap()
+        .id
+        .clone();
+    d.apply(EditRequest::DeleteAction { action_id: wait })
+        .unwrap();
+    assert_eq!(
+        d.compile().iter().map(|e| e.time_us).collect::<Vec<_>>(),
+        original_times
+    );
+    assert_eq!(d.duration_us, 1_000_000);
+    assert!(!d.actions.iter().any(|a| matches!(a.kind, ActionKind::Wait)));
+    assert_eq!(raw, serde_json::to_string(&d.raw).unwrap());
+    d.validate_execution().unwrap();
+}
+#[test]
+fn deleting_recorded_action_keeps_following_times() {
+    let mut d = doc(
+        vec![
+            (100_000, movement(1, 1)),
+            (200_000, down(L, 10, 20)),
+            (260_000, up(L, 10, 20)),
+            (400_000, down(L, 30, 40)),
+            (460_000, up(L, 30, 40)),
+        ],
+        1_000_000,
+    );
+    let target = d
+        .actions
+        .iter()
+        .find(|a| a.start_us == 400_000 && matches!(a.kind, ActionKind::Click { .. }))
+        .expect("第二个点击")
+        .id
+        .clone();
+    let duration = d.duration_us;
+    d.apply(EditRequest::DeleteAction {
+        action_id: target.clone(),
+    })
+    .unwrap();
+    assert!(d.actions.iter().all(|a| a.id != target));
+    assert_eq!(d.duration_us, duration);
+    assert_eq!(
+        d.compile().iter().map(|e| e.time_us).collect::<Vec<_>>(),
+        vec![100_000, 200_000, 260_000]
+    );
+    d.validate_execution().unwrap();
+}
+#[test]
 fn open_input_boundary_rejects_edits_without_partial_changes() {
     let mut d = doc(
         vec![
