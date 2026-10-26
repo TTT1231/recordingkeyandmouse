@@ -645,7 +645,7 @@ impl TaskDocument {
                 };
             }
             EditRequest::UpdateKeys { action_id, chord } => {
-                let vks = parse_chord(&chord)?;
+                let chord = chord.trim().to_string();
                 let i = self.action_index(&action_id)?;
                 if !matches!(
                     self.actions[i].kind,
@@ -653,6 +653,13 @@ impl TaskDocument {
                 ) {
                     return Err("选中的不是按键动作".into());
                 }
+                // 原样确认不重建事件：保留重复按下、原始扫描码与真实按下/抬起时间。
+                if let ActionKind::Keys { chord: existing } = &self.actions[i].kind
+                    && *existing == chord
+                {
+                    return Ok(());
+                }
+                let vks = parse_chord(&chord)?;
                 let a = &mut self.actions[i];
                 let seq = a.events.first().map(|e| e.seq).unwrap_or(1);
                 let last = a.events.last().map(|e| e.seq).unwrap_or(seq);
@@ -886,8 +893,12 @@ pub fn validate_balanced(events: &[RecordedEvent]) -> Result<(), String> {
 }
 pub fn parse_chord(chord: &str) -> Result<Vec<u32>, String> {
     let mut result = Vec::new();
-    for part in chord.split('+') {
-        let key = part.trim().to_uppercase();
+    // “小键盘+”的名称本身含 +，先换成占位符，避免被当成组合键分隔符。
+    for part in chord.replace("小键盘+", "小键盘\u{0}").split('+') {
+        let key = part.replace('\u{0}', "+").trim().to_uppercase();
+        if key.is_empty() {
+            continue;
+        }
         let vk = match key.as_str() {
             "CTRL" | "左CTRL" => 0xA2,
             "右CTRL" => 0xA3,
@@ -908,10 +919,25 @@ pub fn parse_chord(chord: &str) -> Result<Vec<u32>, String> {
             "END" => 0x23,
             "PAGEUP" => 0x21,
             "PAGEDOWN" => 0x22,
+            "PAUSE" => 0x13,
+            "CAPSLOCK" => 0x14,
+            "PRTSC" | "PRINTSCREEN" => 0x2C,
+            "菜单" => 0x5D,
             "LEFT" | "←" => 0x25,
             "UP" | "↑" => 0x26,
             "RIGHT" | "→" => 0x27,
             "DOWN" | "↓" => 0x28,
+            ";" => 0xBA,
+            "=" => 0xBB,
+            "," => 0xBC,
+            "-" => 0xBD,
+            "." => 0xBE,
+            "/" => 0xBF,
+            "`" => 0xC0,
+            "[" => 0xDB,
+            "\\" => 0xDC,
+            "]" => 0xDD,
+            "'" => 0xDE,
             _ if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
                 u32::from(key.as_bytes()[0])
             }
@@ -921,6 +947,29 @@ pub fn parse_chord(chord: &str) -> Result<Vec<u32>, String> {
                 .filter(|n| (1..=24).contains(n))
                 .map(|n| 0x6F + n)
                 .ok_or("不认识这个功能键")?,
+            _ if key.starts_with("小键盘") => {
+                let rest = &key["小键盘".len()..];
+                match rest {
+                    "*" => 0x6A,
+                    "+" => 0x6B,
+                    "-" => 0x6D,
+                    "." => 0x6E,
+                    "/" => 0x6F,
+                    digits => digits
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|n| *n <= 9)
+                        .map(|n| 0x60 + n)
+                        .ok_or("不认识这个小键盘键")?,
+                }
+            }
+            _ if key.starts_with('#') => {
+                let hex = key.trim_start_matches('#').trim_start_matches("0X");
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .filter(|vk| (1..=0xFF).contains(vk))
+                    .ok_or("不认识这个按键码")?
+            }
             _ => return Err("请输入按键名称，例如 A、Tab、Ctrl + S；输入文字请切换到文本".into()),
         };
         if result.contains(&vk) {

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { DocumentView, EditRequest, ExecutionReportView, Hotkeys, SessionSnapshot, WorkspaceView } from "./types";
+import type { DocumentView, EditRequest, Hotkeys, SessionSnapshot, WorkspaceView } from "./types";
 const identity = (doc: DocumentView) => ({ taskId: doc.taskId, revision: doc.revision });
 export const fetchWorkspace = () => invoke<WorkspaceView>("get_workspace");
 export const fetchStatus = () => invoke<SessionSnapshot>("session_status");
@@ -22,7 +22,6 @@ export const demoMode = (enter: boolean) => invoke<WorkspaceView>("demo_mode", {
 export const startExecution = (doc: DocumentView, loopCount: number) =>
     invoke<SessionSnapshot>("start_execution", { ...identity(doc), loopCount });
 export const stopExecution = () => invoke<SessionSnapshot>("stop_execution");
-export const fetchExecutionReport = () => invoke<ExecutionReportView | null>("get_execution_report");
 export const clearError = () => invoke<void>("clear_error");
 export const onStateChanged = (callback: (state: SessionSnapshot) => void) =>
     listen<SessionSnapshot>("state-changed", e => callback(e.payload));

@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { formatClock } from "../format";
+import { formatShortClock } from "../format";
 import type { ActionView } from "../types";
 import { Icon } from "./Icon";
 interface Props {
     hidden?: boolean;
     rows: ActionView[];
     selectedId: string | null;
-    activeId: string | null;
-    playing: boolean;
     recordingLive: boolean;
     disabled: boolean;
     onSelect: (action: ActionView) => void;
     onEdit: (action: ActionView) => void;
     onInsertWait: (after: string | null) => void;
     onInsertText: (after: string | null) => void;
+    onCollapse: () => void;
 }
 export function ActionsPanel(p: Props) {
     const listRef = useRef<HTMLDivElement>(null);
@@ -23,32 +22,51 @@ export function ActionsPanel(p: Props) {
         setLimit(200);
     }, [p.rows]);
     useEffect(() => {
-        const id = p.playing ? p.activeId : p.selectedId;
-        if (!id) return;
-        const index = p.rows.findIndex(row => row.id === id);
+        if (!p.selectedId) return;
+        const index = p.rows.findIndex(row => row.id === p.selectedId);
         if (index >= limit) setLimit(index + 50);
-        const element = listRef.current?.querySelector(`[data-action-id="${id}"]`);
+        const element = listRef.current?.querySelector(`[data-action-id="${p.selectedId}"]`);
         element?.scrollIntoView({ block: "nearest" });
-    }, [p.selectedId, p.activeId, p.playing, p.rows, limit]);
+    }, [p.selectedId, p.rows, limit]);
     useEffect(() => {
         if (!context) return;
         const close = () => setContext(null);
         window.addEventListener("click", close);
         return () => window.removeEventListener("click", close);
     }, [context]);
+    const openContext = (row: ActionView, x: number, y: number) => {
+        if (p.disabled) return;
+        p.onSelect(row);
+        setContext({
+            id: row.id,
+            x: Math.min(x, window.innerWidth - 208),
+            y: Math.min(y, window.innerHeight - 130),
+        });
+    };
     return (
         <aside hidden={p.hidden} className="actions-panel" aria-label="录制内容" data-tour="actions">
             <div className="actions-heading">
                 <h2>
-                    录制内容 <span className="event-count">{p.rows.length} 个动作</span>
+                    录制内容 <span className="event-count">{p.rows.length}</span>
                 </h2>
                 <button
                     type="button"
-                    className="text-button"
-                    disabled={p.disabled || p.recordingLive}
-                    onClick={() => p.onInsertText(p.selectedId)}
+                    className="icon-button"
+                    aria-label="插入等待"
+                    title="在选中动作后插入等待"
+                    disabled={p.disabled || p.recordingLive || !p.selectedId}
+                    onClick={() => p.onInsertWait(p.selectedId)}
                 >
-                    插入文本
+                    <Icon name="plus" size={16} />
+                </button>
+                <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="收起录制内容"
+                    title="收起录制内容"
+                    onClick={p.onCollapse}
+                >
+                    <Icon name="x" size={16} />
                 </button>
             </div>
             <div
@@ -66,11 +84,11 @@ export function ActionsPanel(p: Props) {
                         <div
                             key={row.id}
                             data-action-id={row.id}
-                            className={`event-row${row.id === p.selectedId ? " selected" : ""}${row.id === p.activeId ? " current" : ""}`}
+                            className={`event-row${row.id === p.selectedId ? " selected" : ""}`}
                             role="option"
                             aria-selected={row.id === p.selectedId}
                             tabIndex={0}
-                            title={`${row.title}\n${row.detail}\n${formatClock(row.startUs)} – ${formatClock(row.endUs)}\n${row.eventCount} 个底层事件${row.editable ? "\n双击编辑" : "\n此动作保留原始输入，不提供参数编辑"}`}
+                            title={`${row.title}\n${row.detail}\n${formatShortClock(row.startUs)} – ${formatShortClock(row.endUs)}\n${row.eventCount} 个底层事件${row.editable ? "\n双击编辑" : "\n此动作保留原始输入，不提供参数编辑"}`}
                             onClick={() => p.onSelect(row)}
                             onDoubleClick={() => !p.disabled && p.onEdit(row)}
                             onKeyDown={e => {
@@ -85,14 +103,7 @@ export function ActionsPanel(p: Props) {
                             }}
                             onContextMenu={e => {
                                 e.preventDefault();
-                                if (!p.disabled) {
-                                    p.onSelect(row);
-                                    setContext({
-                                        id: row.id,
-                                        x: Math.min(e.clientX, window.innerWidth - 180),
-                                        y: Math.min(e.clientY, window.innerHeight - 110),
-                                    });
-                                }
+                                openContext(row, e.clientX, e.clientY);
                             }}
                         >
                             <span className="event-icon">
@@ -109,41 +120,29 @@ export function ActionsPanel(p: Props) {
                                 />
                             </span>
                             <span className="event-copy">
-                                <span className="event-title">
-                                    {row.title}
-                                    {p.playing && row.id === p.activeId && <span className="current-label">当前</span>}
-                                </span>
+                                <span className="event-title">{row.title}</span>
                                 <span className="event-detail">{row.detail}</span>
                             </span>
-                            <time className="event-time">{formatClock(row.startUs)}</time>
+                            <time className="event-time">{formatShortClock(row.startUs)}</time>
+                            <button
+                                type="button"
+                                className="event-more icon-button"
+                                aria-label={`${row.title}的更多操作`}
+                                onClick={e => {
+                                    e.stopPropagation();
+                                    openContext(row, e.clientX, e.clientY);
+                                }}
+                            >
+                                <Icon name="more" size={15} />
+                            </button>
                         </div>
                     ))}
-                {p.recordingLive ? (
-                    <p className="muted list-note">录制中，结束后整理为动作。原任务保持不变。</p>
-                ) : !p.rows.length ? (
-                    <p className="muted list-note">录制一次操作，或插入文本开始。</p>
-                ) : (
-                    limit < p.rows.length && (
-                        <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => setLimit(current => current + 200)}
-                        >
-                            继续显示后续动作（共 {p.rows.length} 个）
-                        </button>
-                    )
+                {p.recordingLive && <p className="muted list-note">录制中，结束后整理为动作。</p>}
+                {!p.recordingLive && p.rows.length >= limit && (
+                    <button type="button" className="text-button" onClick={() => setLimit(current => current + 200)}>
+                        继续显示后续动作（共 {p.rows.length} 个）
+                    </button>
                 )}
-            </div>
-            <div className="actions-footer">
-                <span className="muted">单击定位 · 双击编辑 · 右键插入</span>
-                <button
-                    type="button"
-                    className="text-button"
-                    disabled={p.disabled || p.recordingLive || !p.rows.length}
-                    onClick={() => p.onInsertWait(p.selectedId)}
-                >
-                    插入等待
-                </button>
             </div>
             {context && (
                 <div className="context-menu" style={{ left: context.x, top: context.y }}>
@@ -154,13 +153,13 @@ export function ActionsPanel(p: Props) {
                             if (row) p.onEdit(row);
                         }}
                     >
-                        编辑动作
+                        编辑
                     </button>
                     <button type="button" onClick={() => p.onInsertWait(context.id)}>
-                        在其后插入等待
+                        在后面插入等待
                     </button>
                     <button type="button" onClick={() => p.onInsertText(context.id)}>
-                        在其后插入文本
+                        在后面插入文本
                     </button>
                 </div>
             )}

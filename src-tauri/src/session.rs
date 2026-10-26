@@ -894,78 +894,162 @@ fn demo_document() -> TaskDocument {
             x: 0,
             y: 0,
             width: 1280,
-            height: 720,
+            height: 800,
             dpi: 96,
         }],
     };
     let mut doc = TaskDocument::new("使用演示".into(), geometry.clone(), "demo".into());
-    let kinds = [
-        (200_000, EventKind::MouseMove { x: 150, y: 180 }),
-        (350_000, EventKind::MouseMove { x: 260, y: 210 }),
-        (450_000, EventKind::MouseMove { x: 430, y: 280 }),
-        (
-            700_000,
-            EventKind::MouseDown {
-                button: MouseButton::Left,
-                x: 430,
-                y: 280,
+    let mut events: Vec<RecordedEvent> = Vec::new();
+    let mut push = |time_us: i64, kind: EventKind| {
+        let seq = events.len() as u64 + 1;
+        events.push(RecordedEvent {
+            seq,
+            time_us,
+            native_time_ms: (time_us / 1000) as u32,
+            kind,
+        });
+    };
+    let move_a = |push: &mut dyn FnMut(i64, EventKind)| {
+        for i in 0..=12 {
+            let f = i as f64 / 12.0;
+            let time_us = 400_000 + (600_000.0 * f) as i64;
+            push(
+                time_us,
+                EventKind::MouseMove {
+                    x: (160.0 + (430.0 - 160.0) * f) as i32,
+                    y: (190.0 + (280.0 - 190.0) * f) as i32,
+                },
+            );
+        }
+    };
+    move_a(&mut push);
+    push(
+        1_120_000,
+        EventKind::MouseDown {
+            button: MouseButton::Left,
+            x: 430,
+            y: 280,
+        },
+    );
+    push(
+        1_200_000,
+        EventKind::MouseUp {
+            button: MouseButton::Left,
+            x: 430,
+            y: 280,
+        },
+    );
+    push(
+        1_750_000,
+        EventKind::KeyDown {
+            vk: 0x42,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        1_850_000,
+        EventKind::KeyUp {
+            vk: 0x42,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        2_550_000,
+        EventKind::KeyDown {
+            vk: 0x09,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        2_670_000,
+        EventKind::KeyUp {
+            vk: 0x09,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        3_900_000,
+        EventKind::KeyDown {
+            vk: 0x11,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        3_910_000,
+        EventKind::KeyDown {
+            vk: 0x53,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        4_000_000,
+        EventKind::KeyUp {
+            vk: 0x53,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        4_020_000,
+        EventKind::KeyUp {
+            vk: 0x11,
+            scan: 0,
+            extended: false,
+        },
+    );
+    for i in 0..=12 {
+        let f = i as f64 / 12.0;
+        let time_us = 4_550_000 + (1_150_000.0 * f) as i64;
+        push(
+            time_us,
+            EventKind::MouseMove {
+                x: (430.0 + (940.0 - 430.0) * f) as i32,
+                y: (280.0 + (650.0 - 280.0) * f) as i32,
             },
-        ),
-        (
-            780_000,
-            EventKind::MouseUp {
-                button: MouseButton::Left,
-                x: 430,
-                y: 280,
-            },
-        ),
-        (
-            1_300_000,
-            EventKind::KeyDown {
-                vk: 0x09,
-                scan: 0,
-                extended: false,
-            },
-        ),
-        (
-            1_390_000,
-            EventKind::KeyUp {
-                vk: 0x09,
-                scan: 0,
-                extended: false,
-            },
-        ),
-        (2_200_000, EventKind::MouseMove { x: 750, y: 420 }),
-        (
-            2_280_000,
-            EventKind::MouseDown {
-                button: MouseButton::Right,
-                x: 750,
-                y: 420,
-            },
-        ),
-        (
-            2_360_000,
-            EventKind::MouseUp {
-                button: MouseButton::Right,
-                x: 750,
-                y: 420,
-            },
-        ),
-    ];
+        );
+    }
+    push(
+        5_900_000,
+        EventKind::MouseDown {
+            button: MouseButton::Left,
+            x: 940,
+            y: 650,
+        },
+    );
+    push(
+        5_980_000,
+        EventKind::MouseUp {
+            button: MouseButton::Left,
+            x: 940,
+            y: 650,
+        },
+    );
+    push(
+        6_700_000,
+        EventKind::KeyDown {
+            vk: 0x0d,
+            scan: 0,
+            extended: false,
+        },
+    );
+    push(
+        6_800_000,
+        EventKind::KeyUp {
+            vk: 0x0d,
+            scan: 0,
+            extended: false,
+        },
+    );
     doc.replace_recording(RawRecording {
         gestures: Default::default(),
-        events: kinds
-            .into_iter()
-            .enumerate()
-            .map(|(i, (time_us, kind))| RecordedEvent {
-                seq: i as u64 + 1,
-                time_us,
-                native_time_ms: 0,
-                kind,
-            })
-            .collect(),
-        duration_us: 3_000_000,
+        events,
+        duration_us: 6_800_000,
         geometry,
         layout_klid: "demo".into(),
         started_at_wall_ms: 0,

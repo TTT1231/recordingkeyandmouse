@@ -17,10 +17,6 @@ export function formatDurationUs(us: number): string {
     return `${h}时${m % 60}分${restS}秒`;
 }
 
-export function formatMsFromUs(us: number, digits = 1): string {
-    return `${(us / 1000).toFixed(digits)}ms`;
-}
-
 /** 原型时钟格式：mm:ss.mmm。 */
 export function formatClock(us: number): string {
     const ms = Math.max(0, Math.floor(us / 1000));
@@ -28,6 +24,25 @@ export function formatClock(us: number): string {
     const s = Math.floor((ms % 60000) / 1000);
     const rest = ms % 1000;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(rest).padStart(3, "0")}`;
+}
+
+/** 动作列表时间：原型使用 mm:ss.xx，不显示毫秒第三位。 */
+export function formatShortClock(us: number): string {
+    return formatClock(us).slice(0, -1);
+}
+
+/** 时间线刻度：原型使用 m:ss，整秒时不写毫秒。 */
+export function formatTimelineTick(us: number): string {
+    const ms = Math.max(0, Math.round(us / 1000));
+    const base = `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
+    const rest = ms % 1000;
+    return rest ? `${base}.${String(rest).padStart(3, "0").replace(/0+$/, "")}` : base;
+}
+
+/** 任务列表中的时长：原型写作“6.8 秒”，最多保留两位小数。 */
+export function formatSeconds(us: number): string {
+    const seconds = Math.round((Math.max(0, us) / 1_000_000) * 100) / 100;
+    return `${seconds} 秒`;
 }
 
 const VK_NAMES = new Map<number, string>([

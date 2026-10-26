@@ -1,31 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { actionAtTime } from "./actions";
 import { ActionsPanel } from "./components/ActionsPanel";
 import { EditorDialog, Modal, type EditorTarget } from "./components/EditorDialog";
-import { ExecutionReportPanel } from "./components/ExecutionReportPanel";
 import { MenuBar } from "./components/MenuBar";
 import { TaskSidebar } from "./components/TaskSidebar";
 import { TaskToolbar } from "./components/TaskToolbar";
 import { Timeline } from "./components/Timeline";
 import { ViewerArea } from "./components/ViewerArea";
-import { NameDialog, ReferenceDialog, ShortcutsDialog, TourDialog } from "./components/WorkspaceDialogs";
+import { GuideDialog, NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/WorkspaceDialogs";
 import { vkName } from "./format";
-import type { ActionView, EditRequest, ExecutionReportView, SessionSnapshot, WorkspaceView } from "./types";
+import type { ActionView, EditRequest, SessionSnapshot, WorkspaceView } from "./types";
 import "./App.css";
 type Dialog =
     | { type: "editor"; target: EditorTarget }
-    | { type: "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" | "report" }
+    | { type: "record" | "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" }
     | { type: "tour"; enterDemo: boolean }
     | null;
-function exportReport(report: ExecutionReportView) {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `repeat-execution-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-}
 export default function App() {
     const [workspace, setWorkspace] = useState<WorkspaceView | null>(null),
         [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null),
@@ -41,7 +32,6 @@ export default function App() {
         [dialog, setDialog] = useState<Dialog>(null),
         [picking, setPicking] = useState(false),
         [pickedPoint, setPickedPoint] = useState<{ x: number; y: number } | null>(null),
-        [report, setReport] = useState<ExecutionReportView | null>(null),
         [toast, setToast] = useState("");
     const workspaceRef = useRef<WorkspaceView | null>(null),
         snapshotRef = useRef<SessionSnapshot | null>(null),
@@ -93,28 +83,14 @@ export default function App() {
         mounted.current = true;
         const subscription = api
             .onStateChanged(next => {
-                const previous = snapshotRef.current;
                 if (!acceptSnapshot(next)) return;
                 const doc = workspaceRef.current?.document;
                 if (!doc || doc.taskId !== next.taskId || doc.revision !== next.revision) void refresh();
                 if (next.mode !== "idle") {
                     setPlaying(false);
-                    setDialog(current => (current?.type === "about" || current?.type === "report" ? current : null));
+                    setDialog(current => (current?.type === "about" ? current : null));
                     setPicking(false);
                 }
-                if (next.mode === "idle" && previous && previous.mode !== "idle" && next.hasExecutionReport)
-                    void api.fetchExecutionReport().then(value => {
-                        if (!mounted.current) return;
-                        setReport(value);
-                        if (
-                            value &&
-                            !value.outcome.stopped &&
-                            !value.outcome.failure &&
-                            value.outcome.roundsCompleted === value.outcome.roundsRequested
-                        ) {
-                            setTimeUs(workspaceRef.current?.document.durationUs ?? 0);
-                        }
-                    });
             })
             .catch(e => {
                 if (mounted.current) setError(String(e));
@@ -193,8 +169,8 @@ export default function App() {
     const mode = session?.mode ?? "idle";
     const locked = busy || mode !== "idle";
     const rows = document?.actions ?? [];
+    const empty = mode === "idle" && !document?.actions.length && (document?.durationUs ?? 0) <= 0 && !session?.isDemo;
     const selected = rows.find(row => row.id === selectedId) ?? null;
-    const active = useMemo(() => actionAtTime(rows, timeUs), [rows, timeUs]);
     const selectAction = useCallback((action: ActionView) => {
         setSelectedId(action.id);
         setTimeUs(action.startUs);
@@ -254,6 +230,10 @@ export default function App() {
                 locked
             )
                 return;
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+                event.preventDefault();
+                if (!session?.isDemo) openDialog({ type: "create" });
+            }
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
                 event.preventDefault();
                 void saveTask();
@@ -271,10 +251,35 @@ export default function App() {
                 event.preventDefault();
                 editAction(selected);
             }
+            if (event.code === "Space") {
+                if (
+                    event.target instanceof Element &&
+                    event.target.closest("button,summary,a,[role=button],[role=option]")
+                )
+                    return;
+                event.preventDefault();
+                if (playing) setPlaying(false);
+                else {
+                    if (timeUs >= (document?.durationUs ?? 0)) setTimeUs(0);
+                    setPlaying(true);
+                }
+            }
         };
         window.addEventListener("keydown", key);
         return () => window.removeEventListener("keydown", key);
-    }, [dialog, locked, saveTask, changeHistory, selected, editAction]);
+    }, [
+        dialog,
+        locked,
+        saveTask,
+        changeHistory,
+        selected,
+        editAction,
+        openDialog,
+        session?.isDemo,
+        playing,
+        timeUs,
+        document?.durationUs,
+    ]);
     useEffect(() => {
         if (mode !== "executing" || !session?.executionLive || !document) return;
         setTimeUs(Math.min(document.durationUs, session.executionLive.elapsedUs ?? 0));
@@ -288,14 +293,6 @@ export default function App() {
         if (timeUs >= (workspaceRef.current?.document.durationUs ?? 0)) setTimeUs(0);
         setPlaying(true);
     }, [playing, timeUs]);
-    const showReport = async () => {
-        try {
-            setReport(await api.fetchExecutionReport());
-            openDialog({ type: "report" });
-        } catch (e) {
-            setError(String(e));
-        }
-    };
     if (!workspace || !document || !session)
         return (
             <div className="startup-screen">
@@ -335,15 +332,13 @@ export default function App() {
                     onToggleTimeline={() => setTimelineOpen(value => !value)}
                     onCreate={() => openDialog({ type: "create" })}
                     onRename={() => openDialog({ type: "rename" })}
-                    onSave={() => void saveTask()}
                     onUndo={() => changeHistory(false)}
                     onRedo={() => changeHistory(true)}
                     onEdit={() => selected && editAction(selected)}
                     onWait={() => insert("wait", selectedId)}
                     onText={() => insert("text", selectedId)}
-                    onReference={() => openDialog({ type: "reference" })}
                     onDemo={() => openDialog({ type: "tour", enterDemo: true })}
-                    onTour={() => openDialog({ type: "tour", enterDemo: false })}
+                    onTour={() => openDialog({ type: "tour", enterDemo: true })}
                     onShortcuts={() => openDialog({ type: "shortcuts" })}
                     onAbout={() => openDialog({ type: "about" })}
                 />
@@ -404,15 +399,19 @@ export default function App() {
                     onCreate={() => openDialog({ type: "create" })}
                     onSelect={id => void run(() => api.selectTask(id))}
                     onRename={() => openDialog({ type: "rename" })}
+                    onDelete={() => openDialog({ type: "delete" })}
                 />
-                <main className="task-workspace">
+                <main className={`task-workspace${empty ? " empty-task" : ""}`}>
                     <TaskToolbar
                         snapshot={session}
                         document={document}
                         loopCount={loopCount}
                         busy={busy}
+                        empty={empty}
+                        actionsOpen={actionsOpen}
+                        onToggleActions={() => setActionsOpen(value => !value)}
                         onLoopCountChange={setLoopCount}
-                        onStartRecording={() => void run(() => api.startRecording(document))}
+                        onStartRecording={() => openDialog({ type: "record" })}
                         onStopRecording={gesture => void run(() => api.stopRecording(gesture))}
                         onCancelRecording={() => void run(() => api.cancelRecording(document))}
                         onStartExecution={() => {
@@ -425,10 +424,15 @@ export default function App() {
                             void run(() => api.startExecution(document, rounds));
                         }}
                         onStopExecution={() => void run(api.stopExecution)}
+                        onReplay={() => {
+                            setPlaying(false);
+                            setTimeUs(0);
+                            setPlaying(true);
+                        }}
+                        onResetDemo={() => void run(() => api.demoMode(true))}
                         onRename={() => openDialog({ type: "rename" })}
                         onDelete={() => openDialog({ type: "delete" })}
                         onReference={() => openDialog({ type: "reference" })}
-                        onShowReport={() => void showReport()}
                         onExitDemo={() => void run(() => api.demoMode(false))}
                     />
                     {mode === "recording" && (
@@ -450,11 +454,6 @@ export default function App() {
                             {session.executionLive.stopRequested ? " · 正在停止…" : ""}
                         </div>
                     )}
-                    {session.isDemo && (
-                        <div className="demo-notice">
-                            使用演示 · 可以预览和练习编辑，修改不会写入真实任务，系统录放已关闭。
-                        </div>
-                    )}
                     {picking && (
                         <div className="pick-notice">
                             点击预览设置坐标。
@@ -473,7 +472,8 @@ export default function App() {
                                 speed={speed}
                                 disabled={mode !== "idle" || picking}
                                 picking={picking}
-                                currentAction={playing || mode === "executing" ? active : (selected ?? active)}
+                                empty={empty}
+                                isDemo={session.isDemo}
                                 onTimeChange={setTimeUs}
                                 onTogglePlay={togglePlay}
                                 onEnd={finishPlay}
@@ -483,33 +483,31 @@ export default function App() {
                                     setPickedPoint({ x, y });
                                     setPicking(false);
                                 }}
+                                onAddReference={() => openDialog({ type: "reference" })}
                             />
-                            {session.isDemo && <DemoPractice />}
                         </div>
                         {
                             <ActionsPanel
-                                hidden={!actionsOpen}
+                                hidden={!actionsOpen || empty}
                                 rows={shownDocument.actions}
                                 selectedId={selectedId}
-                                activeId={active?.id ?? null}
-                                playing={playing}
                                 recordingLive={mode === "recording"}
                                 disabled={locked}
                                 onSelect={selectAction}
                                 onEdit={editAction}
                                 onInsertWait={after => insert("wait", after)}
                                 onInsertText={after => insert("text", after)}
+                                onCollapse={() => setActionsOpen(false)}
                             />
                         }
                     </div>
                     {
                         <Timeline
-                            hidden={!timelineOpen}
+                            hidden={!timelineOpen || empty}
                             recording={shownDocument}
                             rows={shownDocument.actions}
                             timeUs={mode === "recording" ? 0 : timeUs}
                             selectedId={selectedId}
-                            activeId={active?.id ?? null}
                             disabled={mode !== "idle"}
                             onSeek={(time, action) => {
                                 setPlaying(false);
@@ -525,6 +523,35 @@ export default function App() {
                 <div className="toast" role="status">
                     {toast}
                 </div>
+            )}
+            {dialog?.type === "record" && (
+                <Modal title="开始录制" onClose={closeDialog}>
+                    <div className="dialog-body">
+                        <p className="dialog-lead">
+                            像平常一样操作，完成后按 {vkName(session.hotkeys.recordVk)} 停止。
+                        </p>
+                        <p className="form-note">开始后会连续记录系统键鼠操作和原有停顿。</p>
+                        {document.actions.length > 0 && (
+                            <p className="form-note">新的录制将替换这个任务现有的录制；成功保存前原内容保持不变。</p>
+                        )}
+                    </div>
+                    <div className="dialog-actions">
+                        <button type="button" className="button" onClick={closeDialog}>
+                            取消
+                        </button>
+                        <button
+                            type="button"
+                            className="button primary"
+                            disabled={locked}
+                            onClick={async () => {
+                                if (await run(() => api.startRecording(document))) closeDialog();
+                            }}
+                        >
+                            <span className="record-dot" />
+                            开始
+                        </button>
+                    </div>
+                </Modal>
             )}
             {dialog?.type === "editor" && (
                 <EditorDialog
@@ -560,7 +587,7 @@ export default function App() {
             )}
             {dialog?.type === "delete" && (
                 <Modal title="删除任务" onClose={closeDialog}>
-                    <p>删除「{document.name}」及其录制、编辑结果和参考图？此操作无法撤销。</p>
+                    <p>删除「{document.name}」及其录制、编辑结果和预览背景？此操作无法撤销。</p>
                     <div className="dialog-actions">
                         <button type="button" className="button" onClick={closeDialog}>
                             取消
@@ -599,7 +626,7 @@ export default function App() {
                 />
             )}
             {dialog?.type === "tour" && (
-                <TourDialog
+                <GuideDialog
                     enterDemo={dialog.enterDemo}
                     onClose={closeDialog}
                     onFinish={async () => {
@@ -612,59 +639,11 @@ export default function App() {
             {dialog?.type === "about" && (
                 <Modal title="关于 Repeat" onClose={closeDialog}>
                     <div className="dialog-body">
-                        <p>连续录制、编辑和回放桌面键鼠操作。</p>
-                        <p>任务保存在此设备；预览不会发送系统输入。</p>
-                        <details>
-                            <summary>诊断信息</summary>
-                            <dl className="diagnostic-list">
-                                <dt>原始事件</dt>
-                                <dd>{document.rawEventCount} 个</dd>
-                                <dt>当前动作</dt>
-                                <dd>{document.actions.length} 个</dd>
-                                <dt>执行输入</dt>
-                                <dd>{document.events.length} 个</dd>
-                                <dt>本地文件</dt>
-                                <dd>{workspace.dataPath}</dd>
-                            </dl>
-                            <ul>
-                                {session.hotkeyStatus.map(line => (
-                                    <li key={line}>{line}</li>
-                                ))}
-                            </ul>
-                        </details>
+                        <p className="dialog-lead">把重复的键鼠操作，留给 Repeat。</p>
+                        <p className="form-note">桌面键鼠录制、编辑与回放工具。</p>
                     </div>
                 </Modal>
             )}
-            {dialog?.type === "report" && (
-                <Modal title="上次执行报告" onClose={closeDialog} wide>
-                    {report ? (
-                        <ExecutionReportPanel report={report} onExport={() => exportReport(report)} />
-                    ) : (
-                        <p>还没有执行报告。</p>
-                    )}
-                </Modal>
-            )}
         </div>
-    );
-}
-function DemoPractice() {
-    const [name, setName] = useState(""),
-        [note, setNote] = useState(""),
-        [count, setCount] = useState(0);
-    return (
-        <section className="demo-practice" aria-label="独立练习区域">
-            <strong>练习区域</strong>
-            <label>
-                名称
-                <input value={name} onChange={e => setName(e.target.value)} placeholder="在这里练习输入" />
-            </label>
-            <label>
-                备注
-                <input value={note} onChange={e => setNote(e.target.value)} />
-            </label>
-            <button type="button" className="button" onClick={() => setCount(n => n + 1)}>
-                练习点击 {count}
-            </button>
-        </section>
     );
 }

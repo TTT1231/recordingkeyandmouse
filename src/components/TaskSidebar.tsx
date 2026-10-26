@@ -1,4 +1,4 @@
-import { formatDurationUs } from "../format";
+import { formatSeconds } from "../format";
 import type { DocumentView, SessionSnapshot, TaskSummary } from "../types";
 import { Icon } from "./Icon";
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
     onCreate: () => void;
     onSelect: (id: string) => void;
     onRename: () => void;
+    onDelete: () => void;
 }
 export function TaskSidebar(p: Props) {
     return (
@@ -19,43 +20,64 @@ export function TaskSidebar(p: Props) {
                 disabled={p.disabled || p.snapshot.isDemo}
                 onClick={p.onCreate}
             >
-                <Icon name="plus" />
+                <Icon name="plus" size={16} />
                 新建任务
             </button>
-            <div className="task-section-label">
-                我的任务 <span>{p.tasks.length}</span>
-            </div>
+            <div className="task-section-label">我的任务</div>
             <nav className="task-list" aria-label="选择任务">
-                {p.tasks.map(task => (
-                    <button
-                        type="button"
-                        key={task.id}
-                        className={`task-card${task.id === p.snapshot.taskId ? " selected" : ""}`}
-                        aria-current={task.id === p.snapshot.taskId ? "true" : undefined}
-                        disabled={p.disabled}
-                        onClick={() => p.onSelect(task.id)}
-                        onDoubleClick={() => {
-                            if (task.id === p.snapshot.taskId) p.onRename();
-                        }}
-                    >
-                        <span className="task-card-name">{task.name}</span>
-                        <span className="task-card-meta">
-                            {task.actionCount
-                                ? `${formatDurationUs(task.durationUs)} · ${task.actionCount} 个动作`
-                                : "尚无动作"}
-                        </span>
-                    </button>
-                ))}
+                {p.tasks.map(task => {
+                    const selected = task.id === p.snapshot.taskId;
+                    return (
+                        <div key={task.id} className={`task-row${selected ? " selected" : ""}`}>
+                            <button
+                                type="button"
+                                className="task-select"
+                                aria-current={selected ? "page" : undefined}
+                                disabled={p.disabled}
+                                onClick={() => p.onSelect(task.id)}
+                                onDoubleClick={() => {
+                                    if (selected && !p.snapshot.isDemo) p.onRename();
+                                }}
+                            >
+                                <span className="task-icon">
+                                    <Icon name={task.actionCount ? "repeat" : "folder"} size={16} />
+                                </span>
+                                <span className="task-copy">
+                                    <span className="task-name">{task.name}</span>
+                                    <span className="task-meta">
+                                        {task.actionCount ? formatSeconds(task.durationUs) : "尚未录制"}
+                                    </span>
+                                </span>
+                            </button>
+                            {selected && (
+                                <details className="app-menu task-more">
+                                    <summary aria-label={`${task.name}的更多操作`}>
+                                        <Icon name="more" size={15} />
+                                    </summary>
+                                    <div className="menu-popup">
+                                        <button
+                                            type="button"
+                                            disabled={p.disabled || p.snapshot.isDemo}
+                                            onClick={p.onRename}
+                                        >
+                                            重命名
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="danger-text"
+                                            disabled={p.disabled || p.snapshot.isDemo}
+                                            onClick={p.onDelete}
+                                        >
+                                            删除任务…
+                                        </button>
+                                    </div>
+                                </details>
+                            )}
+                        </div>
+                    );
+                })}
             </nav>
-            <div className="task-sidebar-footer">
-                <span>
-                    {p.snapshot.isDemo
-                        ? "演示内容与任务隔离"
-                        : p.snapshot.hasPendingRecording
-                          ? "有录制尚未保存"
-                          : "任务保存在此设备"}
-                </span>
-            </div>
+            <div className="task-sidebar-footer">本地任务</div>
         </aside>
     );
 }

@@ -9,7 +9,7 @@ export function zoomTimeline(
     factor: number,
     x: number,
 ): TimelineView {
-    const zoom = Math.min(64, Math.max(1, current.zoom * factor));
+    const zoom = Math.min(8, Math.max(1, current.zoom * factor));
     const oldSpan = extent / current.zoom;
     const oldStart = Math.max(0, Math.min(current.startUs, extent - oldSpan));
     const point = Math.max(0, Math.min(1, x / Math.max(1, width)));

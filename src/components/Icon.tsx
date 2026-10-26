@@ -7,6 +7,7 @@ const PATHS: Record<string, string> = {
     previous: "M7 4v12L15 4v12L7 4ZM5 4h1.5v12H5z",
     next: "M11 4l8 6-8 6V4ZM3.5 4H5v12H3.5z",
     record: "M10 3a7 7 0 100 14 7 7 0 000-14Z",
+    "record-ring": "M10 2a8 8 0 100 16 8 8 0 000-16zm0 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11z",
     mouse: "M12 2a7 7 0 017 7v6a7 7 0 01-14 0V9a7 7 0 017-7zm0 2a5 5 0 00-5 5v6a5 5 0 0010 0V9a5 5 0 00-5-5z",
     keyboard:
         "M3 5h18v12H3V5zm2 2v2h2V7H5zm3 0v2h2V7H8zm3 0v2h2V7h-2zm3 0v2h2V7h-2zm3 0v2h2V7h-2zM5 10v2h2v-2H5zm3 0v2h2v-2H8zm3 0v2h2v-2h-2zm3 0v2h2v-2h-2zm3 0v2h2v-2h-2zM7 13v2h10v-2H7z",
@@ -21,6 +22,7 @@ const PATHS: Record<string, string> = {
     arrowLeft: "M10 4l-7 6 7 6v-4h7v-4h-7V4z",
     folder: "M3 5h5l2 2h7v9H3V5z",
     check: "M15.5 5.5l2 2L9 16l-5-5 2-2 3 3 6.5-6.5z",
+    repeat: "M14.6 2.6l4 3.9-4 3.9-1.4-1.4 1.6-1.5H8.5A3.5 3.5 0 005 11v1.5H3V11a5.5 5.5 0 015.5-5.5h6.3l-1.6-1.5 1.4-1.4zM5.4 17.4l4-3.9 1.4 1.4-1.6 1.5h6.3a3.5 3.5 0 003.5-3.5V11.5h2V13a5.5 5.5 0 01-5.5 5.5H9.2l1.6 1.5-1.4 1.4-4-3.9z",
 };
 
 export function Icon({ name, size = 14 }: { name: string; size?: number }) {
@@ -34,7 +36,7 @@ export function Icon({ name, size = 14 }: { name: string; size?: number }) {
             aria-hidden="true"
             style={{ flex: "none" }}
         >
-            <path d={d} />
+            <path d={d} fillRule={name === "record-ring" ? "evenodd" : undefined} />
         </svg>
     );
 }

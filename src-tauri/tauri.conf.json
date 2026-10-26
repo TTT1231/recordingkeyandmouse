@@ -14,7 +14,9 @@
             {
                 "title": "Repeat",
                 "width": 1280,
-                "height": 800
+                "height": 800,
+                "minWidth": 976,
+                "minHeight": 680
             }
         ],
         "security": {

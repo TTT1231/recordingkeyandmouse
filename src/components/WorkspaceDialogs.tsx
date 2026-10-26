@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Modal } from "./EditorDialog";
 import { desktopBounds } from "../actions";
 import { vkName } from "../format";
 import type { DocumentView, Hotkeys, ReferenceImage } from "../types";
+import { Icon } from "./Icon";
 export function NameDialog(p: {
     mode: "create" | "rename";
     initial: string;
@@ -21,12 +22,13 @@ export function NameDialog(p: {
                     p.onSave(name);
                 }}
             >
-                <label>
+                <label className="form-field">
                     任务名称
                     <input
                         autoFocus
                         required
-                        maxLength={100}
+                        maxLength={60}
+                        placeholder="为这项重复操作起个名字"
                         value={name}
                         onFocus={e => e.target.select()}
                         onChange={e => setName(e.target.value)}
@@ -42,7 +44,7 @@ export function NameDialog(p: {
                         取消
                     </button>
                     <button type="submit" className="button primary" disabled={p.busy}>
-                        确认
+                        {p.mode === "create" ? "新建" : "保存"}
                     </button>
                 </div>
             </form>
@@ -94,7 +96,7 @@ export function ReferenceDialog(p: {
         }
     };
     return (
-        <Modal title="预览参考图" onClose={p.onClose}>
+        <Modal title="预览背景" onClose={p.onClose}>
             <form
                 className="dialog-form"
                 onSubmit={e => {
@@ -102,9 +104,7 @@ export function ReferenceDialog(p: {
                     p.onSave(draft);
                 }}
             >
-                <p className="field-help">
-                    手动导入图片作为轨迹对照。参考图不代表录制时的软件画面，也不会自动识别控件。
-                </p>
+                <p className="field-help">手动导入图片作为预览背景。图片不代表录制时的软件画面，也不会自动识别控件。</p>
                 <label>
                     选择图片
                     <input
@@ -118,7 +118,7 @@ export function ReferenceDialog(p: {
                 </label>
                 {draft && (
                     <>
-                        <img className="reference-thumbnail" src={draft.dataUrl} alt={`参考图：${draft.name}`} />
+                        <img className="reference-thumbnail" src={draft.dataUrl} alt={`预览背景：${draft.name}`} />
                         <p className="muted">
                             {draft.name} · {draft.width} × {draft.height}
                         </p>
@@ -149,7 +149,7 @@ export function ReferenceDialog(p: {
                             </div>
                         </details>
                         <button type="button" className="text-button danger-text" onClick={() => setDraft(null)}>
-                            移除参考图
+                            移除预览背景
                         </button>
                     </>
                 )}
@@ -243,57 +243,157 @@ export function ShortcutsDialog(p: {
         </Modal>
     );
 }
-const tour = [
+const stages = [
     {
-        target: "tasks",
-        title: "先创建一项任务",
-        body: "左侧的每个任务单独保存一段录制与编辑结果。切换任务不会混用内容。",
+        key: "tasks",
+        label: "任务区域",
+        title: "一个任务，保存一段录制",
+        description: "在左侧新建或选择任务。每个任务都有自己的录制内容，切换任务即可继续查看。",
     },
     {
-        target: "record",
-        title: "连续录制，再执行",
-        body: "开始录制后像平常一样操作其他应用。执行到系统会真正发送键鼠输入；开始前有 3 秒时间切换到目标应用。",
+        key: "record",
+        label: "连续录制",
+        title: "按下开始，照常操作",
+        description: "开始后会连续记录鼠标移动、点击、键盘输入，以及操作之间的停顿。完成后停止录制。",
     },
     {
-        target: "timeline",
-        title: "沿时间查看操作",
-        body: "预览只在工具内播放。点击或拖动时间线定位，滚轮缩放，适合窗口可显示整段录制。",
-    },
-    {
-        target: "actions",
-        title: "选择、编辑与插入等待",
-        body: "单击动作定位，双击编辑。右键可在动作后插入等待或文本；确认后自动保存，取消保留原内容。",
+        key: "edit",
+        label: "回放与编辑",
+        title: "先回放，需要时再修改",
+        description: "单击动作可定位画面，双击打开编辑。右键动作可以在后面插入等待，再回放确认。",
     },
 ];
-export function TourDialog(p: { enterDemo: boolean; onClose: () => void; onFinish: () => void }) {
-    const [step, setStep] = useState(0);
-    const item = tour[step];
+export function GuideDialog(p: { enterDemo: boolean; onClose: () => void; onFinish: () => void }) {
+    const [stageIndex, setStageIndex] = useState(0);
+    const ref = useRef<HTMLDialogElement>(null);
+    const stage = stages[stageIndex];
     useEffect(() => {
-        const node = document.querySelector(`[data-tour="${item.target}"]`);
-        node?.classList.add("tour-highlight");
-        return () => node?.classList.remove("tour-highlight");
-    }, [item]);
+        const node = ref.current;
+        if (node && !node.open) node.showModal();
+        return () => {
+            if (node?.open) node.close();
+        };
+    }, []);
     return (
-        <Modal title="了解 Repeat 工作区" onClose={p.onClose}>
-            <div className="dialog-body">
-                <p className="muted">
-                    {step + 1} / {tour.length}
+        <dialog
+            ref={ref}
+            className="tour-dialog"
+            aria-labelledby="tour-title"
+            aria-describedby="tour-description"
+            onCancel={e => {
+                e.preventDefault();
+                p.onClose();
+            }}
+        >
+            <header className="tour-header">
+                <h2 className="tour-title" id="tour-title">
+                    先认识一下工作区
+                </h2>
+                <button type="button" className="tour-close" aria-label="关闭引导" onClick={p.onClose}>
+                    <Icon name="x" size={18} />
+                </button>
+            </header>
+            <nav className="tour-stage-nav" aria-label="引导主题">
+                {stages.map((item, index) => (
+                    <button
+                        key={item.key}
+                        type="button"
+                        className={`tour-stage-button${index === stageIndex ? " tour-stage-current" : ""}`}
+                        aria-current={index === stageIndex ? "true" : undefined}
+                        onClick={() => setStageIndex(index)}
+                    >
+                        {item.label}
+                    </button>
+                ))}
+            </nav>
+            <div className="tour-map" data-tour-region={stage.key} aria-hidden="true">
+                <div className="tour-map-titlebar">
+                    <span className="tour-map-brand">Repeat</span>
+                    <span>每日录入</span>
+                    <span className="tour-map-window">—　□　×</span>
+                </div>
+                <aside className="tour-map-tasks">
+                    <div className="tour-map-task-heading">
+                        <strong>任务</strong>
+                        <span>＋</span>
+                    </div>
+                    <div className="tour-map-task tour-map-task-selected">
+                        <Icon name="folder" size={13} />
+                        <span>每日录入</span>
+                    </div>
+                    <div className="tour-map-task">
+                        <Icon name="folder" size={13} />
+                        <span>文件整理</span>
+                    </div>
+                </aside>
+                <div className="tour-map-workspace">
+                    <div className="tour-map-toolbar">
+                        <span className="tour-map-record">
+                            <i />
+                            <span className="tour-map-record-idle">开始录制</span>
+                            <span className="tour-map-record-active">正在录制</span>
+                        </span>
+                        <span className="tour-map-play">▷　回放</span>
+                        <span className="tour-map-timer">00:03</span>
+                    </div>
+                    <div className="tour-map-preview">
+                        <div className="tour-map-document">
+                            <span />
+                            <span />
+                            <span />
+                        </div>
+                        <span className="tour-map-cursor">
+                            <Icon name="cursor" size={17} />
+                        </span>
+                    </div>
+                    <div className="tour-map-timeline">
+                        <div className="tour-map-ruler">
+                            <span>0:00</span>
+                            <span>0:02</span>
+                            <span>0:04</span>
+                        </div>
+                        <div className="tour-map-clip">
+                            <span className="tour-map-motion">
+                                <Icon name="cursor" size={11} />
+                                <i />
+                            </span>
+                            <span className="tour-map-key">B</span>
+                            <span className="tour-map-key tour-map-key-shortcut">Ctrl + S</span>
+                            <span className="tour-map-playhead" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <section className="tour-explanation" aria-live="polite">
+                <h3 className="tour-stage-title">{stage.title}</h3>
+                <p className="tour-description" id="tour-description">
+                    {stage.description}
                 </p>
-                <h3>{item.title}</h3>
-                <p>{item.body}</p>
-            </div>
-            <div className="dialog-actions">
-                <button type="button" className="button" onClick={p.onFinish}>
-                    {p.enterDemo ? "跳过，进入演示" : "结束导览"}
+            </section>
+            <footer className="tour-footer">
+                <button type="button" className="tour-skip" onClick={p.onFinish}>
+                    跳过引导
                 </button>
-                <button
-                    type="button"
-                    className="button primary"
-                    onClick={() => (step < tour.length - 1 ? setStep(step + 1) : p.onFinish())}
-                >
-                    {step < tour.length - 1 ? "下一步" : p.enterDemo ? "进入演示" : "完成"}
-                </button>
-            </div>
-        </Modal>
+                <div className="tour-footer-actions">
+                    <button
+                        type="button"
+                        className="tour-button tour-back"
+                        disabled={stageIndex === 0}
+                        onClick={() => setStageIndex(index => Math.max(0, index - 1))}
+                    >
+                        上一步
+                    </button>
+                    <button
+                        type="button"
+                        className="tour-button tour-next"
+                        onClick={() =>
+                            stageIndex === stages.length - 1 ? p.onFinish() : setStageIndex(stageIndex + 1)
+                        }
+                    >
+                        {stageIndex === stages.length - 1 ? (p.enterDemo ? "进入使用演示" : "完成") : "下一项"}
+                    </button>
+                </div>
+            </footer>
+        </dialog>
     );
 }

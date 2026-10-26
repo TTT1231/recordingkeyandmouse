@@ -570,3 +570,58 @@ fn double_click_obeys_recorded_platform_settings() {
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].kind, ActionKind::Click { count: 2, .. }));
 }
+
+#[test]
+fn chord_names_round_trip_through_vk_name_and_numpad_plus_is_one_key() {
+    let vks = [
+        0x08, 0x0D, 0x13, 0x14, 0x1B, 0x20, 0x21, 0x28, 0x2C, 0x2D, 0x2E, 0x30, 0x41, 0x5B, 0x5D,
+        0x60, 0x69, 0x6A, 0x6B, 0x6D, 0x6E, 0x6F, 0x70, 0x87, 0xA0, 0xA5, 0xBA, 0xC0, 0xDB, 0xDE,
+        0x3A,
+    ];
+    for vk in vks {
+        let name = vk_name(vk);
+        assert_eq!(
+            parse_chord(&name),
+            Ok(vec![vk]),
+            "vk_name({vk:#04X}) 生成的「{name}」应能解析回原键"
+        );
+    }
+    let chord = format!("{} + {} + {}", vk_name(0xA2), vk_name(0x6B), vk_name(0x41));
+    assert_eq!(parse_chord(&chord), Ok(vec![0xA2, 0x6B, 0x41]));
+    assert!(parse_chord("小键盘+ + A").is_ok());
+}
+
+#[test]
+fn unchanged_keys_edit_keeps_repeats_and_original_timing() {
+    let mut d = doc(
+        vec![
+            (0, key(0x41, true)),
+            (200_000, key(0x41, true)),
+            (400_000, key(0x41, true)),
+            (600_000, key(0x41, false)),
+        ],
+        700_000,
+    );
+    let ActionKind::Keys { chord } = &d.actions[0].kind else {
+        panic!("应是键盘动作");
+    };
+    assert_eq!(chord, "A");
+    let before = same(&d);
+    let id = d.actions[0].id.clone();
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id.clone(),
+        chord: "A".into(),
+    })
+    .unwrap();
+    assert_eq!(before, same(&d), "原样确认不能重建事件或丢掉重复按下");
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id,
+        chord: "Ctrl + 小键盘+".into(),
+    })
+    .unwrap();
+    let ActionKind::Keys { chord } = &d.actions[0].kind else {
+        panic!("编辑后仍是键盘动作");
+    };
+    assert_eq!(chord, "左Ctrl + 小键盘+");
+    d.validate_execution().unwrap();
+}
