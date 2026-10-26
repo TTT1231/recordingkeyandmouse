@@ -19,7 +19,7 @@ repeat/
 └── lefthook.yml             # git hooks：pre-commit lint/format、pre-push typecheck
 ```
 
-前端与 Rust 侧目前均为官方脚手架；两层职责边界与依赖方向见 ADR-0001 第 3 节。
+两层职责边界与依赖方向见 ADR-0001 第 3 节；阶段进度只记录在实施计划，不在 README 中维护进度副本。
 
 ## 硬约束
 
