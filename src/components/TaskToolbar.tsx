@@ -85,7 +85,7 @@ export function TaskToolbar(p: Props) {
     const executing = mode === "executing" || mode === "preparing";
     const demo = p.snapshot.isDemo;
     return (
-        <header className="task-header" data-tour="record">
+        <header className="task-header">
             <div className="task-header-left">
                 {demo && (
                     <button
@@ -100,7 +100,6 @@ export function TaskToolbar(p: Props) {
                 )}
                 <div className="task-heading">
                     <h1 title={p.document.name}>{p.document.name}</h1>
-                    {demo && <span className="demo-caption">独立练习，不会改动你的任务</span>}
                 </div>
             </div>
             <div className="task-toolbar" role="toolbar" aria-label="当前任务操作">

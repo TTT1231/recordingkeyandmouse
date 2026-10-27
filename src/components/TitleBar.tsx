@@ -18,7 +18,6 @@ interface Props {
     onUndo: () => void;
     onRedo: () => void;
     onDemo: () => void;
-    onTour: () => void;
     onShortcuts: () => void;
     onAbout: () => void;
 }
@@ -226,11 +225,8 @@ export function TitleBar(p: Props) {
                 <details className="app-menu">
                     <summary>帮助</summary>
                     <div className="menu-popup">
-                        <button type="button" disabled={disabled} onClick={p.onDemo}>
+                        <button type="button" disabled={disabled || p.snapshot.isDemo} onClick={p.onDemo}>
                             使用演示
-                        </button>
-                        <button type="button" onClick={p.onTour}>
-                            界面导览
                         </button>
                         <div className="menu-separator" />
                         <button type="button" disabled={disabled} onClick={p.onShortcuts}>

@@ -292,7 +292,7 @@ export function ViewerArea(p: Props) {
             : "";
     return (
         <section className="viewer-area" aria-label="键鼠回放预览">
-            <div ref={viewportRef} className={`preview-viewport${p.picking ? " picking" : ""}`} data-tour="preview">
+            <div ref={viewportRef} className={`preview-viewport${p.picking ? " picking" : ""}`}>
                 {p.empty ? (
                     <div className="empty-task-message">
                         <span className="empty-task-icon">

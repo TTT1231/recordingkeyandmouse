@@ -372,7 +372,7 @@ export function Timeline(p: Props) {
         return headX >= PAD && headX <= width - PAD && Math.abs(clientX - rect.left - headX) <= 7;
     };
     return (
-        <section hidden={p.hidden} className="timeline" aria-label="录制时间线" data-tour="timeline">
+        <section hidden={p.hidden} className="timeline" aria-label="录制时间线">
             <TimelineResizer laneHeight={laneHeight} onChange={setLaneHeight} />
             {zoomSlot &&
                 createPortal(

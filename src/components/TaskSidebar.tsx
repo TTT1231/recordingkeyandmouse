@@ -36,7 +36,7 @@ export function TaskSidebar(p: Props) {
             className="task-sidebar"
             aria-label="我的任务"
             aria-hidden={p.collapsed || undefined}
-            data-tour="tasks"
+
             inert={p.collapsed || undefined}
             onContextMenu={event => {
                 if (!(event.target instanceof Element && event.target.closest(".task-row"))) setContext(null);

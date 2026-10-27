@@ -45,7 +45,7 @@ export function ActionsPanel(p: Props) {
         });
     };
     return (
-        <aside hidden={p.hidden} className="actions-panel" aria-label="录制内容" data-tour="actions">
+        <aside hidden={p.hidden} className="actions-panel" aria-label="录制内容">
             <div className="actions-heading">
                 <h2>
                     录制内容 <span className="event-count">{p.rows.length}</span>

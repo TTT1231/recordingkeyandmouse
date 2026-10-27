@@ -11,15 +11,16 @@ import { TitleBar, WindowControls } from "./components/TitleBar";
 import { ViewerArea } from "./components/ViewerArea";
 import { WindowResizeHandles } from "./components/WindowResizeHandles";
 import { INFINITE_ROUNDS, repeatRounds, type RepeatMode } from "./repeat";
-import { GuideDialog, NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/WorkspaceDialogs";
+import { NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/WorkspaceDialogs";
 import { vkName } from "./format";
 import { SIDEBAR_DEFAULT, SIDEBAR_OPEN_KEY, SIDEBAR_WIDTH_KEY, clampSidebarWidth } from "./layout";
 import type { ActionView, EditRequest, SessionSnapshot, WorkspaceView } from "./types";
+import { version } from "../package.json";
+import appIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 type Dialog =
     | { type: "editor"; target: EditorTarget }
     | { type: "record" | "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" }
-    | { type: "tour"; enterDemo: boolean }
     | null;
 function readSidebarWidth(): number {
     try {
@@ -57,6 +58,7 @@ export default function App() {
         [toast, setToast] = useState("");
     const workspaceRef = useRef<WorkspaceView | null>(null),
         snapshotRef = useRef<SessionSnapshot | null>(null),
+        previousDemoPanels = useRef<{ actionsOpen: boolean; timelineOpen: boolean } | null>(null),
         mounted = useRef(true),
         fetchSerial = useRef(0),
         mutating = useRef(false);
@@ -247,13 +249,14 @@ export default function App() {
         [openDialog],
     );
     const saveEdit = useCallback(
-        async (edit: EditRequest) => {
+        async (edit: EditRequest, showFeedback = true) => {
             const doc = workspaceRef.current?.document;
             if (!doc) return;
             const before = new Set(doc.actions.map(a => a.id));
+            if (!showFeedback) setToast("");
             if (await run(() => api.editTask(doc, edit))) {
                 closeDialog();
-                setToast(snapshotRef.current?.isDemo ? "演示中的修改已生效" : "已保存");
+                if (showFeedback) setToast(snapshotRef.current?.isDemo ? "演示中的修改已生效" : "已保存");
                 const added = workspaceRef.current?.document.actions.find(a => !before.has(a.id));
                 if (added) selectAction(added);
             }
@@ -393,8 +396,14 @@ export default function App() {
                 onRename={() => openDialog({ type: "rename" })}
                 onUndo={() => changeHistory(false)}
                 onRedo={() => changeHistory(true)}
-                onDemo={() => openDialog({ type: "tour", enterDemo: true })}
-                onTour={() => openDialog({ type: "tour", enterDemo: true })}
+                onDemo={async () => {
+                    setPlaying(false);
+                    if (await run(() => api.demoMode(true))) {
+                        previousDemoPanels.current = { actionsOpen, timelineOpen };
+                        setActionsOpen(true);
+                        setTimelineOpen(true);
+                    }
+                }}
                 onShortcuts={() => openDialog({ type: "shortcuts" })}
                 onAbout={() => openDialog({ type: "about" })}
             />
@@ -493,7 +502,16 @@ export default function App() {
                             setPlaying(true);
                         }}
                         onResetDemo={() => void run(() => api.demoMode(true))}
-                        onExitDemo={() => void run(() => api.demoMode(false))}
+                        onExitDemo={async () => {
+                            if (await run(() => api.demoMode(false))) {
+                                const previous = previousDemoPanels.current;
+                                if (previous) {
+                                    setActionsOpen(previous.actionsOpen);
+                                    setTimelineOpen(previous.timelineOpen);
+                                    previousDemoPanels.current = null;
+                                }
+                            }
+                        }}
                     />
                     {mode === "recording" && (
                         <div className="capture-notice">
@@ -525,7 +543,7 @@ export default function App() {
                         </div>
                     )}
                     <div className="workspace-body">
-                        <div className="viewer-column" data-tour="preview">
+                        <div className="viewer-column">
                             <ViewerArea
                                 recording={shownDocument}
                                 rows={shownDocument.actions}
@@ -575,7 +593,7 @@ export default function App() {
                             selectedId={selectedId}
                             disabled={locked}
                             onUpdateWait={(actionId, durationUs) =>
-                                void saveEdit({ op: "updateWait", actionId, durationUs })
+                                void saveEdit({ op: "updateWait", actionId, durationUs }, false)
                             }
                             onSeek={(time, action) => {
                                 setPlaying(false);
@@ -655,9 +673,17 @@ export default function App() {
             )}
             {dialog?.type === "delete" && (
                 <Modal title="删除任务" onClose={closeDialog}>
-                    <p>删除「{document.name}」及其录制、编辑结果和预览背景？此操作无法撤销。</p>
+                    <div className="delete-dialog-body">
+                        <p className="delete-dialog-question">确定删除「{document.name}」？</p>
+                        <p>录制内容、编辑结果和预览背景也会一并删除，此操作无法撤销。</p>
+                        {error && (
+                            <p className="form-error" role="alert">
+                                {error}
+                            </p>
+                        )}
+                    </div>
                     <div className="dialog-actions">
-                        <button type="button" className="button" onClick={closeDialog}>
+                        <button type="button" className="button" onClick={closeDialog} autoFocus>
                             取消
                         </button>
                         <button
@@ -693,22 +719,26 @@ export default function App() {
                     }}
                 />
             )}
-            {dialog?.type === "tour" && (
-                <GuideDialog
-                    enterDemo={dialog.enterDemo}
-                    onClose={closeDialog}
-                    onFinish={async () => {
-                        if (dialog.enterDemo) {
-                            if (await run(() => api.demoMode(true))) closeDialog();
-                        } else closeDialog();
-                    }}
-                />
-            )}
             {dialog?.type === "about" && (
                 <Modal title="关于 Repeat" onClose={closeDialog}>
-                    <div className="dialog-body">
-                        <p className="dialog-lead">把重复的键鼠操作，留给 Repeat。</p>
-                        <p className="form-note">桌面键鼠录制、编辑与回放工具。</p>
+                    <div className="about-dialog-body">
+                        <div className="about-product">
+                            <img src={appIcon} alt="" width="64" height="64" />
+                            <div>
+                                <p className="about-name">Repeat</p>
+                                <p className="about-category">桌面键鼠录制与回放工具</p>
+                            </div>
+                        </div>
+                        <p className="about-description">录制一次，按需要编辑，再预览或执行重复操作。</p>
+                        <div className="about-version">
+                            <span>版本</span>
+                            <span>{version}</span>
+                        </div>
+                    </div>
+                    <div className="dialog-actions">
+                        <button type="button" className="button" onClick={closeDialog}>
+                            关闭
+                        </button>
                     </div>
                 </Modal>
             )}
