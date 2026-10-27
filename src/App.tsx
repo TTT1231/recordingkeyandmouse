@@ -336,10 +336,29 @@ export default function App() {
         timeUs,
         document?.durationUs,
     ]);
+    // 执行中的播放头：快照每 100–250ms 才到一次，直接驱动时间轴会一顿一顿地跳。
+    // 以最近一次快照为基准本地外推，两份快照之间由 rAF 平滑推进；回放节奏仍由 Rust 掌控。
+    const execBase = useRef<{ atMs: number; elapsedUs: number } | null>(null);
     useEffect(() => {
-        if (mode !== "executing" || !session?.executionLive || !document) return;
-        setTimeUs(Math.min(document.durationUs, session.executionLive.elapsedUs ?? 0));
-    }, [mode, session?.executionLive?.elapsedUs, document]);
+        const live = session?.executionLive;
+        if (mode !== "executing" || !live) {
+            execBase.current = null;
+            return;
+        }
+        execBase.current = { atMs: performance.now(), elapsedUs: live.elapsedUs };
+    }, [mode, session?.executionLive?.elapsedUs, session?.executionLive?.currentRound]);
+    useEffect(() => {
+        if (mode !== "executing") return;
+        let raf = 0;
+        const tick = () => {
+            const base = execBase.current;
+            if (base)
+                setTimeUs(Math.min(document?.durationUs ?? 0, base.elapsedUs + (performance.now() - base.atMs) * 1000));
+            raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, [mode, document?.durationUs]);
     const finishPlay = useCallback(() => setPlaying(false), []);
     const togglePlay = useCallback(() => {
         if (playing) {
