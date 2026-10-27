@@ -1,18 +1,28 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { formatSeconds, formatTimelineTick } from "../format";
 import type { ActionView, DocumentView } from "../types";
 import { Icon } from "./Icon";
-import { zoomTimeline } from "../timeline";
+import {
+    MAX_TIMELINE_ZOOM,
+    MIN_TIMELINE_ZOOM,
+    resizedWaitDuration,
+    timelineTickTimes,
+    zoomTimeline,
+} from "../timeline";
+import { recordingSegments } from "../timelineSegments";
+import { clampTimelineLane, TIMELINE_HEIGHT_KEY, TIMELINE_LANE_DEFAULT, TimelineResizer } from "./TimelineResizer";
 const RULER = 28,
-    LANE = 44,
+    LANE_BASE = 44,
+    RECORDING_HEIGHT = 36,
+    WAIT_HEIGHT = 32,
+    LANE_GAP = 10,
     PAD = 8,
     MUTED = "#616b70",
     ACCENT = "#1b6c80",
-    ACCENT_SOFT = "#e6f0f3",
-    ACCENT_LINE = "#a7c0c9",
     RECORD = "#df5457",
-    RIBBON_LINE = "#d9e3e7",
-    RIBBON_BG = "#eff4f6",
+    RIBBON_LINE = "#8eb5bf",
+    RIBBON_BG = "#cde3e9",
     FIGURES = '"IBM Plex Sans","Segoe UI",sans-serif';
 interface Props {
     hidden?: boolean;
@@ -22,12 +32,13 @@ interface Props {
     selectedId: string | null;
     disabled?: boolean;
     onSeek: (timeUs: number, action?: ActionView) => void;
+    onUpdateWait: (actionId: string, durationUs: number) => void;
 }
 function lane(action: ActionView) {
-    return action.kind.type === "wait" ? 2 : ["keys", "text"].includes(action.kind.type) ? 1 : 0;
+    return action.kind.type === "wait" ? 1 : 0;
 }
 function laneTop(index: number) {
-    return RULER + index * LANE;
+    return RULER + index * (LANE_BASE + LANE_GAP);
 }
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
     const radius = Math.max(0, Math.min(r, w / 2, h / 2));
@@ -43,106 +54,57 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
     ctx.arcTo(x, y, x + radius, y, radius);
     ctx.closePath();
 }
-function drawSelectionBand(ctx: CanvasRenderingContext2D, x: number, top: number) {
-    ctx.fillStyle = ACCENT_SOFT;
-    roundRect(ctx, x - 5, top + 7, 10, 32, 4);
-    ctx.fill();
-}
-
-/** 点击用一根竖向刻线表示：左键帽子在上、右键在下、中键居中，双击是双帽子。 */
-function drawClickTick(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    top: number,
-    button: string,
-    doubleClick: boolean,
-    selected: boolean,
-) {
-    const y0 = top + 9,
-        y1 = top + 37,
-        center = (y0 + y1) / 2;
-    if (selected) drawSelectionBand(ctx, x, top);
-    ctx.strokeStyle = ACCENT;
-    ctx.lineWidth = selected ? 2 : 1.4;
-    ctx.beginPath();
-    ctx.moveTo(x, y0);
-    ctx.lineTo(x, y1);
-    ctx.stroke();
-    const capY = button === "right" ? y1 - 5 : button === "middle" ? center : y0 + 5;
-    const gap = doubleClick ? 2.5 : 0;
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    if (gap) {
-        ctx.moveTo(x - 3.2, capY - gap);
-        ctx.lineTo(x + 3.2, capY - gap);
-        ctx.moveTo(x - 3.2, capY + gap);
-        ctx.lineTo(x + 3.2, capY + gap);
-    } else {
-        ctx.moveTo(x - 3.2, capY);
-        ctx.lineTo(x + 3.2, capY);
-    }
-    ctx.stroke();
-}
-
-/** 滚轮用同一条刻线加中空圆点，和点击的短帽子区分。 */
-function drawWheelTick(ctx: CanvasRenderingContext2D, x: number, top: number, selected: boolean) {
-    const y0 = top + 9,
-        y1 = top + 37,
-        center = (y0 + y1) / 2;
-    if (selected) drawSelectionBand(ctx, x, top);
-    ctx.strokeStyle = ACCENT;
-    ctx.lineWidth = selected ? 2 : 1.4;
-    ctx.beginPath();
-    ctx.moveTo(x, y0);
-    ctx.lineTo(x, y1);
-    ctx.stroke();
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.arc(x, center, 2.6, 0, Math.PI * 2);
-    ctx.stroke();
-}
-
-/** 移动/拖拽用横线：拖拽为虚线并在终点画空心圆，避免每个动作重复一个大图标。 */
-function drawMotionLine(
-    ctx: CanvasRenderingContext2D,
-    left: number,
-    right: number,
-    top: number,
-    drag: boolean,
-    selected: boolean,
-) {
-    const y = top + 25;
-    if (selected) {
-        ctx.fillStyle = ACCENT_SOFT;
-        roundRect(ctx, left, top + 12, Math.max(4, right - left), 24, 5);
-        ctx.fill();
-    }
-    ctx.strokeStyle = selected ? ACCENT : ACCENT_LINE;
-    ctx.lineWidth = selected ? 2.4 : 2;
-    ctx.setLineDash(drag ? [4, 3] : []);
-    ctx.beginPath();
-    ctx.moveTo(left + 1, y);
-    ctx.lineTo(Math.max(left + 2, right - 1), y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    if (drag) {
-        // 拖拽只补一个终点短竖线：虚线本身表示按住拖动，避免密集时叠成一串圆点。
-        ctx.strokeStyle = ACCENT;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.moveTo(right - 1, y - 4);
-        ctx.lineTo(right - 1, y + 4);
-        ctx.stroke();
-    }
-}
 export function Timeline(p: Props) {
     const trackRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [width, setWidth] = useState(600);
     const [view, setView] = useState({ zoom: 1, startUs: 0 });
-    const dragging = useRef<{ pan: boolean; startX: number; startUs: number } | null>(null);
-    const hasWaits = useMemo(() => p.rows.some(a => a.kind.type === "wait"), [p.rows]);
-    const height = RULER + LANE * (hasWaits ? 3 : 2);
+    const [zoomSlot, setZoomSlot] = useState<HTMLElement | null>(null);
+    const [zoomInput, setZoomInput] = useState<string | null>(null);
+    const dragging = useRef<
+        | { kind: "pan"; startX: number; startUs: number }
+        | { kind: "seek" }
+        | { kind: "resize"; startX: number; action: ActionView; edge: "left" | "right"; durationUs: number }
+        | null
+    >(null);
+    const [resizePreview, setResizePreview] = useState<{ action: ActionView; durationUs: number } | null>(null);
+    const [resizeHover, setResizeHover] = useState(false);
+    const [headHover, setHeadHover] = useState(false);
+    const displayRows = useMemo(() => {
+        if (!resizePreview) return p.rows;
+        const { action: wait, durationUs } = resizePreview;
+        const delta = durationUs - (wait.endUs - wait.startUs);
+        return p.rows.map(action => {
+            if (action.id === wait.id) return { ...action, endUs: action.startUs + durationUs };
+            if (action.startUs >= wait.endUs)
+                return { ...action, startUs: action.startUs + delta, endUs: action.endUs + delta };
+            return action;
+        });
+    }, [p.rows, resizePreview]);
+    const displayDurationUs =
+        p.recording.durationUs +
+        (resizePreview ? resizePreview.durationUs - (resizePreview.action.endUs - resizePreview.action.startUs) : 0);
+    const [laneHeight, setLaneHeight] = useState(() => {
+        try {
+            const saved = window.localStorage.getItem(TIMELINE_HEIGHT_KEY);
+            return clampTimelineLane(saved === null ? TIMELINE_LANE_DEFAULT : Number(saved));
+        } catch {
+            return clampTimelineLane(TIMELINE_LANE_DEFAULT);
+        }
+    });
+    const height = RULER + laneHeight * 2 + LANE_GAP;
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(TIMELINE_HEIGHT_KEY, String(laneHeight));
+        } catch {
+            /* storage unavailable */
+        }
+    }, [laneHeight]);
+    useEffect(() => {
+        const resize = () => setLaneHeight(current => clampTimelineLane(current));
+        window.addEventListener("resize", resize);
+        return () => window.removeEventListener("resize", resize);
+    }, []);
     const extent = useMemo(
         () => Math.max(1_000_000, p.recording.durationUs + Math.max(100_000, p.recording.durationUs * 0.06)),
         [p.recording.durationUs],
@@ -154,10 +116,14 @@ export function Timeline(p: Props) {
         setView({ zoom: 1, startUs: 0 });
     }, [p.recording.taskId]);
     useLayoutEffect(() => {
+        setZoomSlot(p.hidden ? null : document.getElementById("timeline-zoom-slot"));
+        setZoomInput(null);
+    }, [p.hidden, p.recording.taskId]);
+    useLayoutEffect(() => {
         const track = trackRef.current;
         if (!track) return;
         const measure = () => {
-            const next = Math.max(1, track.clientWidth);
+            const next = Math.max(1, track.getBoundingClientRect().width);
             setWidth(current => (current === next ? current : next));
         };
         measure();
@@ -170,18 +136,37 @@ export function Timeline(p: Props) {
         if (p.hidden) return;
         const track = trackRef.current;
         if (!track) return;
-        const next = Math.max(1, track.clientWidth);
+        const next = Math.max(1, track.getBoundingClientRect().width);
         setWidth(current => (current === next ? current : next));
     }, [p.hidden]);
     const zoomAt = useCallback(
-        (factor: number, x: number) => setView(current => zoomTimeline(current, extent, width, factor, x)),
+        (factor: number, x: number) =>
+            setView(current => zoomTimeline(current, extent, Math.max(1, width - PAD * 2), factor, x - PAD)),
         [extent, width],
     );
+    const commitZoomInput = () => {
+        if (zoomInput !== null && zoomInput.trim() !== "") {
+            const percent = Number(zoomInput);
+            if (Number.isFinite(percent)) {
+                setView(current =>
+                    zoomTimeline(
+                        current,
+                        extent,
+                        Math.max(1, width - PAD * 2),
+                        percent / 100 / current.zoom,
+                        width / 2 - PAD,
+                    ),
+                );
+            }
+        }
+        setZoomInput(null);
+    };
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const wheel = (event: WheelEvent) => {
             event.preventDefault();
+            if (dragging.current?.kind === "resize") return;
             const rect = canvas.getBoundingClientRect();
             if (event.shiftKey)
                 setView(current => ({
@@ -189,7 +174,7 @@ export function Timeline(p: Props) {
                     startUs: Math.max(
                         0,
                         Math.min(
-                            extent - extent / current.zoom,
+                            Math.max(0, extent - extent / current.zoom),
                             current.startUs + ((event.deltaY / width) * extent) / current.zoom,
                         ),
                     ),
@@ -209,7 +194,7 @@ export function Timeline(p: Props) {
         // 只在尺寸变化时重置画布；切换任务时不要无谓清空重绘，避免闪帧。
         if (canvas.width !== backingWidth) canvas.width = backingWidth;
         if (canvas.height !== backingHeight) canvas.height = backingHeight;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.setTransform(backingWidth / width, 0, 0, backingHeight / height, 0, 0);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
@@ -217,9 +202,7 @@ export function Timeline(p: Props) {
         ctx.lineJoin = "round";
         const contentWidth = Math.max(1, width - PAD * 2);
         const xOf = (t: number) => PAD + ((t - start) / span) * contentWidth;
-        const ribbonTop = RULER + 2,
-            ribbonHeight = LANE * 2 - 4;
-        const endX = xOf(p.recording.durationUs);
+        const endX = xOf(displayDurationUs);
         // 刻度尺：mm:ss 整秒标签 + 圆点刻痕；亚秒只做无标签的中间点。
         const labelSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
         let step = 3_600_000;
@@ -231,7 +214,7 @@ export function Timeline(p: Props) {
             }
         }
         ctx.font = `12px ${FIGURES}`;
-        for (let t = Math.floor(start / step) * step; t <= start + span; t += step / 2) {
+        for (const t of timelineTickTimes(start, span, displayDurationUs, step)) {
             const x = xOf(t);
             if (x < 0 || x > width) continue;
             const minor = Math.abs(t / step - Math.round(t / step)) > 0.01;
@@ -254,103 +237,53 @@ export function Timeline(p: Props) {
                 }
             }
         }
-        // 录制 ribbon：一条连续圆角底板覆盖鼠标 + 键盘轨道。
-        const ribbonRight = Math.min(width - PAD, endX);
-        if (ribbonRight > PAD + 10) {
+        // 录制片段沿时间轴连续显示；插入的等待独占其时间区间。
+        const waits = displayRows
+            .filter(action => action.kind.type === "wait")
+            .slice()
+            .sort((a, b) => a.startUs - b.startUs);
+        const segments = recordingSegments(displayRows, displayDurationUs);
+        const selected = displayRows.find(action => action.id === p.selectedId && action.kind.type !== "wait");
+        const top = laneTop(0) + (LANE_BASE - RECORDING_HEIGHT) / 2;
+        for (const segment of segments) {
+            const left = Math.max(PAD, xOf(segment.start));
+            const right = Math.min(width - PAD, xOf(segment.end));
+            if (right <= left) continue;
             ctx.fillStyle = RIBBON_BG;
-            ctx.strokeStyle = RIBBON_LINE;
+            ctx.strokeStyle =
+                selected && selected.startUs >= segment.start && selected.startUs < segment.end ? ACCENT : RIBBON_LINE;
             ctx.lineWidth = 1;
-            roundRect(ctx, PAD + 0.5, ribbonTop, ribbonRight - PAD - 0.5, ribbonHeight, 9);
+            roundRect(ctx, left, top, right - left, RECORDING_HEIGHT, 6);
             ctx.fill();
             ctx.stroke();
         }
-        const bottom = height;
-        let lastKeyRight = -1;
-        for (const action of p.rows) {
-            const x0 = xOf(action.startUs),
-                x1 = xOf(action.endUs);
-            if (x1 < -30 || x0 > width + 30) continue;
-            const top = laneTop(lane(action));
-            const selected = action.id === p.selectedId;
-            const emphasized = selected;
-            if (action.kind.type === "move" || action.kind.type === "drag") {
-                const left = Math.max(0, x0),
-                    right = Math.min(width, x1);
-                if (right - left < 2) continue;
-                drawMotionLine(ctx, left, right, top, action.kind.type === "drag", emphasized);
-                if (right - left >= 74) {
-                    ctx.fillStyle = ACCENT;
-                    ctx.font = `12px ${FIGURES}`;
-                    ctx.textAlign = "left";
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.rect(left, top, right - left, LANE);
-                    ctx.clip();
-                    ctx.fillText(action.kind.type === "drag" ? "拖拽" : "移动", left + 10, top + 17);
-                    ctx.restore();
-                }
-            } else if (action.kind.type === "click" || action.kind.type === "wheel") {
-                const x = Math.max(1, Math.min(width - 1, x0));
-                if (action.kind.type === "click")
-                    drawClickTick(ctx, x, top, action.kind.button, action.kind.count === 2, emphasized);
-                else drawWheelTick(ctx, x, top, emphasized);
-            } else if (action.kind.type === "wait") {
-                const left = Math.max(0, x0),
-                    right = Math.min(width, Math.max(x1, x0 + 3));
-                ctx.fillStyle = "#f5f1e8";
-                ctx.strokeStyle = selected ? "#796342" : "#d8cdb7";
-                ctx.lineWidth = 1;
-                roundRect(ctx, left, top + 8, Math.max(3, right - left), LANE - 16, 5);
-                ctx.fill();
-                ctx.stroke();
-                if (right - left > 64) {
-                    ctx.fillStyle = "#796342";
-                    ctx.font = `12px ${FIGURES}`;
-                    ctx.textAlign = "center";
-                    ctx.fillText(formatSeconds(action.endUs - action.startUs), (left + right) / 2, top + 26);
-                }
-            } else {
-                const left = Math.max(0, x0);
-                // 键盘动作密集时退化成短刻线，不再让白色芯片互相压住。
-                if (left < lastKeyRight + 4) {
-                    if (emphasized) {
-                        ctx.fillStyle = ACCENT_SOFT;
-                        roundRect(ctx, left - 2, top + 14, 6, 20, 3);
-                        ctx.fill();
-                    }
-                    ctx.strokeStyle = emphasized ? ACCENT : "#4c5b63";
-                    ctx.lineWidth = emphasized ? 2 : 1.2;
-                    ctx.beginPath();
-                    ctx.moveTo(left, top + 16);
-                    ctx.lineTo(left, top + 32);
-                    ctx.stroke();
-                    lastKeyRight = Math.max(lastKeyRight, left + 3);
-                    continue;
-                }
-                const label = action.kind.type === "keys" ? action.kind.chord : action.kind.text.replace(/\n/g, "↵");
-                const short = label.length > 12 ? `${label.slice(0, 11)}…` : label;
-                ctx.font = `13px ${FIGURES}`;
-                const w = Math.max(24, Math.min(width - left, ctx.measureText(short).width + 16));
-                const top2 = laneTop(1);
-                ctx.fillStyle = emphasized ? "#fff" : "#ffffffc7";
-                ctx.strokeStyle = emphasized ? ACCENT : "#d3dce1";
-                ctx.lineWidth = 1;
-                roundRect(ctx, left, top2 + 9, w, 26, 5);
-                ctx.fill();
-                ctx.stroke();
-                ctx.fillStyle = emphasized ? ACCENT : "#4c5b63";
-                ctx.textAlign = "left";
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(left, top2 + 9, w, 26);
-                ctx.clip();
-                ctx.fillText(short, left + 8, top2 + 26);
-                ctx.restore();
-                lastKeyRight = left + w;
+        for (const action of waits) {
+            const left = Math.max(PAD, xOf(action.startUs));
+            const right = Math.min(width - PAD, xOf(action.endUs));
+            if (right <= left) continue;
+            const waitTop = laneTop(1) + (LANE_BASE - WAIT_HEIGHT) / 2;
+            ctx.fillStyle = "#f5f1e8";
+            ctx.strokeStyle = action.id === p.selectedId ? "#796342" : "#d8cdb7";
+            ctx.lineWidth = 1;
+            roundRect(ctx, left, waitTop, right - left, WAIT_HEIGHT, 5);
+            ctx.fill();
+            ctx.stroke();
+            if (right - left > 64) {
+                ctx.fillStyle = "#796342";
+                ctx.font = `12px ${FIGURES}`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(
+                    formatSeconds(action.endUs - action.startUs),
+                    (left + right) / 2,
+                    waitTop + WAIT_HEIGHT / 2,
+                );
+                ctx.textBaseline = "alphabetic";
             }
         }
+        const bottom = height;
         // 结束标记与播放头。
-        if (p.recording.durationUs > 0 && endX >= 0 && endX <= width) {
+        if (displayDurationUs > 0 && endX >= 0 && endX <= width) {
             ctx.strokeStyle = RIBBON_LINE;
             ctx.lineWidth = 1;
             ctx.beginPath();
@@ -376,17 +309,17 @@ export function Timeline(p: Props) {
             ctx.fill();
         }
     }, [
-        p.rows,
+        displayRows,
         p.timeUs,
         p.selectedId,
         p.recording.taskId,
-        p.recording.durationUs,
+        displayDurationUs,
         width,
         height,
+        laneHeight,
         view.zoom,
         start,
         span,
-        hasWaits,
         p.hidden,
     ]);
     const hit = (clientX: number, clientY: number) => {
@@ -394,14 +327,13 @@ export function Timeline(p: Props) {
         const x = clientX - rect.left;
         const y = clientY - rect.top;
         let rowLane = -1;
-        if (y >= laneTop(0) && y < laneTop(0) + LANE) rowLane = 0;
-        else if (y >= laneTop(1) && y < laneTop(1) + LANE) rowLane = 1;
-        else if (hasWaits && y >= laneTop(2) && y < laneTop(2) + LANE) rowLane = 2;
+        if (y >= laneTop(0) && y < laneTop(0) + LANE_BASE) rowLane = 0;
+        else if (y >= laneTop(1) && y < laneTop(1) + LANE_BASE) rowLane = 1;
         const time = start + ((x - PAD) / Math.max(1, width - PAD * 2)) * span;
         const tolerance = (span / Math.max(1, width - PAD * 2)) * 8;
         let best: ActionView | undefined;
         let distance = Infinity;
-        for (const action of p.rows) {
+        for (const action of displayRows) {
             if (lane(action) !== rowLane) continue;
             const d = Math.min(
                 Math.abs(action.startUs - time),
@@ -412,97 +344,162 @@ export function Timeline(p: Props) {
                 distance = d;
             }
         }
-        return { time: Math.max(0, Math.min(p.recording.durationUs, time)), action: best, x, y };
+        return { time: Math.max(0, Math.min(displayDurationUs, time)), action: best, x, y };
+    };
+    const waitEdgeAt = (clientX: number, clientY: number) => {
+        const rect = canvasRef.current!.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        const top = laneTop(1) + (LANE_BASE - WAIT_HEIGHT) / 2;
+        if (y < top || y > top + WAIT_HEIGHT) return null;
+        let best: { action: ActionView; edge: "left" | "right"; distance: number } | null = null;
+        for (const action of p.rows) {
+            if (action.kind.type !== "wait" || !action.editable) continue;
+            // 等待起点与前面的录制内容相接，只拖动结束边缘，避免手柄与指针反向移动。
+            for (const edge of ["right"] as const) {
+                const time = action.endUs;
+                const edgeX = PAD + ((time - start) / span) * Math.max(1, width - PAD * 2);
+                if (edgeX < PAD || edgeX > width - PAD) continue;
+                const distance = Math.abs(x - edgeX);
+                if (distance <= 7 && (!best || distance < best.distance)) best = { action, edge, distance };
+            }
+        }
+        return best;
+    };
+    const isPlayheadAt = (clientX: number) => {
+        const rect = canvasRef.current!.getBoundingClientRect();
+        const headX = PAD + ((p.timeUs - start) / span) * Math.max(1, width - PAD * 2);
+        return headX >= PAD && headX <= width - PAD && Math.abs(clientX - rect.left - headX) <= 7;
     };
     return (
         <section hidden={p.hidden} className="timeline" aria-label="录制时间线" data-tour="timeline">
-            <div className="timeline-heading">
-                <div className="timeline-zoom">
-                    <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="缩小时间线"
-                        title="缩小"
-                        disabled={view.zoom <= 1}
-                        onClick={() => zoomAt(0.8, width / 2)}
-                    >
-                        <Icon name="minus" size={14} />
-                    </button>
-                    <button
-                        type="button"
-                        className="zoom-fit-label"
-                        title="点击显示完整时间线"
-                        aria-label="适合窗口，显示完整时间线"
-                        onClick={() => setView({ zoom: 1, startUs: 0 })}
-                    >
-                        {view.zoom === 1 ? "适合窗口" : `${Math.round(view.zoom * 100)}%`}
-                    </button>
-                    <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="放大时间线"
-                        title="放大"
-                        disabled={view.zoom >= 8}
-                        onClick={() => zoomAt(1.25, width / 2)}
-                    >
-                        <Icon name="plus" size={14} />
-                    </button>
-                    <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="时间线适合窗口"
-                        title="适合窗口"
-                        aria-pressed={view.zoom === 1}
-                        onClick={() => setView({ zoom: 1, startUs: 0 })}
-                    >
-                        <Icon name="maximize" size={14} />
-                    </button>
-                </div>
-            </div>
+            <TimelineResizer laneHeight={laneHeight} onChange={setLaneHeight} />
+            {zoomSlot &&
+                createPortal(
+                    <div className="timeline-zoom" aria-label="时间线缩放">
+                        <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="缩小时间线"
+                            title="缩小"
+                            disabled={view.zoom <= MIN_TIMELINE_ZOOM}
+                            onClick={() => zoomAt(0.8, width / 2)}
+                        >
+                            <Icon name="minus" size={14} />
+                        </button>
+                        {zoomInput === null ? (
+                            <button
+                                type="button"
+                                className="zoom-value"
+                                title="双击输入缩放比例（50%–400%）"
+                                aria-label={`时间线缩放 ${Math.round(view.zoom * 100)}%，双击或按回车输入`}
+                                onDoubleClick={() => setZoomInput(String(Math.round(view.zoom * 100)))}
+                                onClick={event => {
+                                    if (event.detail === 0) setZoomInput(String(Math.round(view.zoom * 100)));
+                                }}
+                            >
+                                {Math.round(view.zoom * 100)}%
+                            </button>
+                        ) : (
+                            <input
+                                className="zoom-value zoom-input"
+                                aria-label="输入时间线缩放比例，百分之五十到四百"
+                                type="number"
+                                min={MIN_TIMELINE_ZOOM * 100}
+                                max={MAX_TIMELINE_ZOOM * 100}
+                                value={zoomInput}
+                                autoFocus
+                                onFocus={event => event.currentTarget.select()}
+                                onChange={event => setZoomInput(event.currentTarget.value)}
+                                onBlur={commitZoomInput}
+                                onKeyDown={event => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
+                                    if (event.key === "Escape") setZoomInput(null);
+                                }}
+                            />
+                        )}
+                        <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="放大时间线"
+                            title="放大"
+                            disabled={view.zoom >= MAX_TIMELINE_ZOOM}
+                            onClick={() => zoomAt(1.25, width / 2)}
+                        >
+                            <Icon name="plus" size={14} />
+                        </button>
+                    </div>,
+                    zoomSlot,
+                )}
             <div className="timeline-body">
                 <div className="lane-labels">
-                    <div className="ruler-label" aria-hidden="true" />
-                    <div className="lane-label">
+                    <div className="ruler-label" style={{ height: RULER }} aria-hidden="true" />
+                    <div className="lane-label" style={{ height: LANE_BASE }}>
                         <Icon name="mouse" size={15} />
-                        鼠标
+                        录制
                     </div>
-                    <div className="lane-label">
-                        <Icon name="keyboard" size={15} />
-                        键盘
+                    <div className="lane-label wait-label" style={{ height: LANE_BASE, marginTop: LANE_GAP }}>
+                        <Icon name="clock" size={15} />
+                        等待
                     </div>
-                    {hasWaits && (
-                        <div className="lane-label wait-label">
-                            <Icon name="clock" size={15} />
-                            等待
-                        </div>
-                    )}
                 </div>
                 <div className="timeline-track" ref={trackRef}>
                     <canvas
                         ref={canvasRef}
-                        style={{ height }}
+                        style={{ height, cursor: resizeHover ? "ew-resize" : headHover ? "grab" : undefined }}
                         onPointerDown={e => {
                             if (p.disabled) return;
+                            if (e.button !== 0 && e.button !== 1) return;
                             e.currentTarget.setPointerCapture(e.pointerId);
                             const pan = e.shiftKey || e.button === 1;
-                            dragging.current = { pan, startX: e.clientX, startUs: start };
-                            if (!pan) {
+                            const edge = !pan ? waitEdgeAt(e.clientX, e.clientY) : null;
+                            if (edge) {
+                                const durationUs = edge.action.endUs - edge.action.startUs;
+                                dragging.current = {
+                                    kind: "resize",
+                                    startX: e.clientX,
+                                    action: edge.action,
+                                    edge: edge.edge,
+                                    durationUs,
+                                };
+                                setResizePreview({ action: edge.action, durationUs });
+                                setResizeHover(true);
+                                p.onSeek(edge.action.startUs, edge.action);
+                            } else if (pan) dragging.current = { kind: "pan", startX: e.clientX, startUs: start };
+                            else {
+                                dragging.current = { kind: "seek" };
                                 const result = hit(e.clientX, e.clientY);
                                 p.onSeek(result.time, result.action);
                             }
                         }}
                         onPointerMove={e => {
-                            if (!dragging.current) return;
-                            if (dragging.current.pan)
+                            const drag = dragging.current;
+                            if (!drag) {
+                                const resize = !p.disabled && !!waitEdgeAt(e.clientX, e.clientY);
+                                setResizeHover(resize);
+                                setHeadHover(!p.disabled && !resize && isPlayheadAt(e.clientX));
+                                return;
+                            }
+                            if (drag.kind === "resize") {
+                                const original = drag.action.endUs - drag.action.startUs;
+                                const durationUs = Math.min(
+                                    Number.MAX_SAFE_INTEGER - p.recording.durationUs + original,
+                                    resizedWaitDuration(
+                                        original,
+                                        e.clientX - drag.startX,
+                                        span,
+                                        width - PAD * 2,
+                                        drag.edge,
+                                    ),
+                                );
+                                drag.durationUs = durationUs;
+                                setResizePreview({ action: drag.action, durationUs });
+                            } else if (drag.kind === "pan")
                                 setView(current => ({
                                     ...current,
                                     startUs: Math.max(
                                         0,
-                                        Math.min(
-                                            maxStart,
-                                            dragging.current!.startUs -
-                                                ((e.clientX - dragging.current!.startX) / width) * span,
-                                        ),
+                                        Math.min(maxStart, drag.startUs - ((e.clientX - drag.startX) / width) * span),
                                     ),
                                 }));
                             else {
@@ -511,12 +508,33 @@ export function Timeline(p: Props) {
                             }
                         }}
                         onPointerUp={e => {
+                            const drag = dragging.current;
                             dragging.current = null;
+                            setResizePreview(null);
+                            if (drag?.kind === "resize" && drag.durationUs !== drag.action.endUs - drag.action.startUs)
+                                p.onUpdateWait(drag.action.id, drag.durationUs);
+                            setResizeHover(!p.disabled && !!waitEdgeAt(e.clientX, e.clientY));
+                            setHeadHover(!p.disabled && isPlayheadAt(e.clientX));
                             if (e.currentTarget.hasPointerCapture(e.pointerId))
                                 e.currentTarget.releasePointerCapture(e.pointerId);
                         }}
                         onPointerCancel={() => {
                             dragging.current = null;
+                            setResizePreview(null);
+                            setResizeHover(false);
+                            setHeadHover(false);
+                        }}
+                        onLostPointerCapture={() => {
+                            dragging.current = null;
+                            setResizePreview(null);
+                            setResizeHover(false);
+                            setHeadHover(false);
+                        }}
+                        onPointerLeave={() => {
+                            if (!dragging.current) {
+                                setResizeHover(false);
+                                setHeadHover(false);
+                            }
                         }}
                     />
                 </div>

@@ -983,8 +983,10 @@ body.is-resizing-sidebar .app-layout {
 .play-button:not(:disabled):hover {
     background: var(--active);
 }
-.speed-select {
+#timeline-zoom-slot {
     margin-left: auto;
+}
+.speed-select {
     max-width: 82px;
     border: 0;
     border-radius: 4px;
@@ -1131,37 +1133,76 @@ body.is-resizing-sidebar .app-layout {
 }
 /* ── 时间线 ────────────────────────────────────────────── */
 .timeline {
+    position: relative;
     flex: none;
     min-width: 0;
-    padding: 0 20px 12px;
+    padding: 20px 20px 12px;
     border-top: 1px solid var(--line);
     background: var(--surface);
 }
-.timeline-heading {
-    height: 32px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+.timeline-resizer {
+    position: absolute;
+    z-index: 5;
+    top: -5px;
+    left: 0;
+    right: 0;
+    height: 18px;
+    cursor: ns-resize;
+    touch-action: none;
+}
+.timeline-resizer::after {
+    content: "";
+    display: block;
+    width: 38px;
+    height: 3px;
+    margin: 7px auto;
+    border-radius: 3px;
+    background: #c4d0d5;
+}
+.timeline-resizer:hover::after,
+.timeline-resizer.resizing::after,
+.timeline-resizer:focus-visible::after {
+    background: var(--accent);
+}
+.timeline-resizer:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+}
+body.is-resizing-timeline,
+body.is-resizing-timeline * {
+    cursor: ns-resize !important;
+    user-select: none !important;
 }
 .timeline-zoom {
     display: flex;
     align-items: center;
     gap: 3px;
-    margin-left: auto;
     color: var(--muted);
 }
 .timeline-zoom > .icon-button {
     width: 26px;
     height: 26px;
 }
-.zoom-fit-label {
-    width: 76px;
+.zoom-value {
+    width: 56px;
     height: 26px;
     border-radius: 4px;
     text-align: center;
     font-size: 13px;
     white-space: nowrap;
     color: var(--muted);
+}
+.zoom-input {
+    border: 1px solid var(--accent);
+    background: var(--surface);
+    outline: none;
+    font-variant-numeric: tabular-nums;
+    appearance: textfield;
+}
+.zoom-input::-webkit-inner-spin-button,
+.zoom-input::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
 }
 .timeline-body {
     display: flex;
@@ -1189,13 +1230,11 @@ body.is-resizing-sidebar .app-layout {
 .lane-label {
     height: 44px;
 }
-.wait-label {
-    margin-top: 4px;
-}
 .timeline-track {
     position: relative;
     flex: 1;
     min-width: 0;
+    overflow: hidden;
 }
 .timeline-track canvas {
     display: block;
@@ -2196,9 +2235,6 @@ body.is-resizing-sidebar .app-layout {
 .timeline-body {
     padding-bottom: 16px;
 }
-.wait-label {
-    margin-top: 0;
-}
 
 /* ── 响应式：与原型断点一致，不出现手机布局 ────────────── */
 @media (max-width: 1359px) {
@@ -2281,9 +2317,6 @@ body.is-resizing-sidebar .app-layout {
     }
     .timeline {
         padding-bottom: 10px;
-    }
-    .timeline-heading {
-        height: 36px;
     }
     .event-row {
         min-height: 44px;

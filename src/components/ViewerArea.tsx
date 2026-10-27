@@ -424,6 +424,7 @@ export function ViewerArea(p: Props) {
                             <Icon name="next" />
                         </button>
                     </div>
+                    <div id="timeline-zoom-slot" />
                     <select
                         className="speed-select"
                         aria-label="预览速度"

@@ -21,8 +21,13 @@ export function ActionsPanel(p: Props) {
     const [context, setContext] = useState<{ id: string; x: number; y: number } | null>(null);
     useEffect(() => {
         if (!p.selectedId) return;
-        const element = listRef.current?.querySelector(`[data-action-id="${p.selectedId}"]`);
-        element?.scrollIntoView({ block: "nearest" });
+        const list = listRef.current;
+        const element = list?.querySelector(`[data-action-id="${p.selectedId}"]`);
+        if (!list || !element) return;
+        const listBounds = list.getBoundingClientRect();
+        const rowBounds = element.getBoundingClientRect();
+        if (rowBounds.top < listBounds.top) list.scrollTop += rowBounds.top - listBounds.top;
+        else if (rowBounds.bottom > listBounds.bottom) list.scrollTop += rowBounds.bottom - listBounds.bottom;
     }, [p.selectedId, p.rows]);
     useEffect(() => {
         if (!context) return;

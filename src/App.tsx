@@ -571,7 +571,10 @@ export default function App() {
                             rows={shownDocument.actions}
                             timeUs={mode === "recording" ? 0 : timeUs}
                             selectedId={selectedId}
-                            disabled={mode !== "idle"}
+                            disabled={locked}
+                            onUpdateWait={(actionId, durationUs) =>
+                                void saveEdit({ op: "updateWait", actionId, durationUs })
+                            }
                             onSeek={(time, action) => {
                                 setPlaying(false);
                                 setTimeUs(time);
