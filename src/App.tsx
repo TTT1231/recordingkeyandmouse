@@ -522,7 +522,7 @@ export default function App() {
                     {mode === "preparing" && (
                         <div className="executing-notice" role="status">
                             将在 {Math.max(1, Math.ceil((session.executionLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
-                            秒后执行。请切换到目标应用；{vkName(session.hotkeys.stopVk)} 可取消。
+                            秒后执行；{vkName(session.hotkeys.stopVk)} 可取消。
                         </div>
                     )}
                     {mode === "executing" && session.executionLive && (
@@ -614,12 +614,9 @@ export default function App() {
                 <Modal title="开始录制" onClose={closeDialog}>
                     <div className="dialog-body">
                         <p className="dialog-lead">
-                            像平常一样操作，完成后按 {vkName(session.hotkeys.recordVk)} 停止。
+                            像平常一样操作，按 <kbd className="keycap">{vkName(session.hotkeys.recordVk)}</kbd> 停止。
                         </p>
-                        <p className="form-note">开始后会连续记录系统键鼠操作和原有停顿。</p>
-                        {document.actions.length > 0 && (
-                            <p className="form-note">新的录制将替换这个任务现有的录制；成功保存前原内容保持不变。</p>
-                        )}
+                        {document.actions.length > 0 && <p className="form-note">本次录制将替换现有录制。</p>}
                     </div>
                     <div className="dialog-actions">
                         <button type="button" className="button" onClick={closeDialog}>
@@ -674,8 +671,7 @@ export default function App() {
             {dialog?.type === "delete" && (
                 <Modal title="删除任务" onClose={closeDialog}>
                     <div className="delete-dialog-body">
-                        <p className="delete-dialog-question">确定删除「{document.name}」？</p>
-                        <p>录制内容、编辑结果和预览背景也会一并删除，此操作无法撤销。</p>
+                        <p>删除后，录制内容、编辑结果和预览背景将一并删除，此操作无法撤销。</p>
                         {error && (
                             <p className="form-error" role="alert">
                                 {error}
@@ -725,15 +721,13 @@ export default function App() {
                         <div className="about-product">
                             <img src={appIcon} alt="" width="64" height="64" />
                             <div>
-                                <p className="about-name">Repeat</p>
+                                <p className="about-name">
+                                    Repeat <span className="about-version">{version}</span>
+                                </p>
                                 <p className="about-category">桌面键鼠录制与回放工具</p>
                             </div>
                         </div>
                         <p className="about-description">录制一次，按需要编辑，再预览或执行重复操作。</p>
-                        <div className="about-version">
-                            <span>版本</span>
-                            <span>{version}</span>
-                        </div>
                     </div>
                     <div className="dialog-actions">
                         <button type="button" className="button" onClick={closeDialog}>

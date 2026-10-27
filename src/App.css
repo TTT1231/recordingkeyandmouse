@@ -1284,6 +1284,7 @@ body.is-resizing-timeline * {
     margin-right: -3px;
 }
 .dialog-body {
+    padding: 20px 24px;
     font-size: 13px;
     line-height: 1.7;
 }
@@ -1301,15 +1302,9 @@ body.is-resizing-timeline * {
 .delete-dialog-body {
     display: grid;
     gap: 12px;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 14px;
     line-height: 1.7;
-}
-.delete-dialog-question {
-    color: var(--ink);
-    font-size: 16px;
-    font-weight: 600;
-    overflow-wrap: anywhere;
 }
 .about-product {
     display: flex;
@@ -1330,19 +1325,15 @@ body.is-resizing-timeline * {
     color: var(--muted);
 }
 .about-description {
-    margin-top: 24px;
+    margin-top: 20px;
     font-size: 14px;
     line-height: 1.7;
+    color: var(--muted);
 }
 .about-version {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--rule);
+    margin-left: 4px;
+    font: 400 13px var(--figures);
     color: var(--muted);
-    font-size: 13px;
 }
 .dialog-form {
     display: flex;
@@ -1682,6 +1673,20 @@ body.is-resizing-timeline * {
     font-size: 13px;
     line-height: 1.7;
     color: var(--muted);
+}
+.keycap {
+    display: inline-block;
+    min-width: 24px;
+    margin: 0 2px;
+    padding: 0 8px;
+    border: 1px solid var(--control);
+    border-bottom-width: 3px;
+    border-radius: 6px;
+    background: var(--raised);
+    font: 600 12px/1.7 var(--figures);
+    text-align: center;
+    color: var(--ink);
+    vertical-align: middle;
 }
 .dialog-footer {
     display: flex;

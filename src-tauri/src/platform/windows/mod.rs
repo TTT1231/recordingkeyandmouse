@@ -110,21 +110,11 @@ pub fn make_driver(
 pub use input_service::InputServiceHandle;
 pub use input_service::start_input_service;
 
-/// 倒计时结束后才检查前台和用户已有按住状态，避免向工具自身输入。
+/// 执行按录制内容原样回放，不检查前台应用；倒计时结束后只检查用户已有按住状态，
+/// 避免物理按键与回放输入混叠。
 pub fn execution_ready() -> Result<(), String> {
-    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_invalid() {
-            return Err("没有可用的前台目标窗口".into());
-        }
-        let mut process_id = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-        if process_id == GetCurrentProcessId() {
-            return Err("请在准备倒计时内切换到目标应用，再执行任务".into());
-        }
         for vk in 1..=254 {
             if GetAsyncKeyState(vk) < 0 {
                 return Err("开始执行前请松开当前按住的键和鼠标，再重试".into());
