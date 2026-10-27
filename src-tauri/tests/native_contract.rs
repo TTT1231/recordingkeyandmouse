@@ -400,6 +400,8 @@ impl Drop for ExternalHeld {
 }
 fn toggle_app() {
     external(key(0x79, true));
+    // 零间隔的按下-抬起对在系统繁忙时可能不触发 RegisterHotKey，与真实按键一致地保持 60ms。
+    thread::sleep(Duration::from_millis(60));
     external(key(0x79, false));
     thread::sleep(Duration::from_millis(350));
 }
