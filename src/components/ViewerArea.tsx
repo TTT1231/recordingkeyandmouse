@@ -306,7 +306,7 @@ export function ViewerArea(p: Props) {
                         <div className="screen-canvas" style={{ width: size.width, height: size.height }}>
                             <canvas
                                 ref={canvasRef}
-                                aria-label="键鼠轨迹预览"
+                                aria-label="回放画布"
                                 onClick={e => {
                                     if (!p.picking || !p.onPick) return;
                                     const rect = e.currentTarget.getBoundingClientRect();

@@ -17,7 +17,6 @@ export interface PreviewCursor {
     lastWheel: { x: number; y: number; axis: WheelAxis; delta: number; atUs: number } | null;
     textFeedback: string;
     textAtUs: number;
-    trail: Array<{ x: number; y: number }>;
 }
 export function createCursor(): PreviewCursor {
     return {
@@ -32,7 +31,6 @@ export function createCursor(): PreviewCursor {
         lastWheel: null,
         textFeedback: "",
         textAtUs: 0,
-        trail: [],
     };
 }
 export function seek(cursor: PreviewCursor, events: RecordedEvent[], timeUs: number): void {
@@ -54,9 +52,6 @@ function applyEvent(cursor: PreviewCursor, event: RecordedEvent) {
         cursor.hasPos = true;
     }
     switch (k.kind) {
-        case "mouseMove":
-            cursor.trail.push({ x: k.x, y: k.y });
-            break;
         case "keyDown":
             cursor.keysDown.add(k.vk);
             break;

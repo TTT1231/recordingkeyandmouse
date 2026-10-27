@@ -17,17 +17,13 @@ describe("预览游标", () => {
         ev(6, 2_100_000, { kind: "mouseUp", button: "left", x: 200, y: 150 }),
     ];
 
-    it("前进过程保留按住状态与轨迹", () => {
+    it("前进过程保留位置与按住状态", () => {
         const c = createCursor();
         advance(c, events, 1_200_000);
         expect(c.hasPos).toBe(true);
         expect(c.x).toBe(200);
         expect(c.y).toBe(150);
         expect([...c.keysDown]).toEqual([0x41]);
-        expect(c.trail).toEqual([
-            { x: 100, y: 100 },
-            { x: 200, y: 150 },
-        ]);
     });
 
     it("时间轴末尾后仍可继续推进（结尾停顿）", () => {
@@ -47,7 +43,6 @@ describe("预览游标", () => {
         expect(c.index).toBe(2); // 已消费：移动(0) + 按下 A(500k)
         expect([...c.keysDown]).toEqual([0x41]);
         expect(c.lastClick).toBeNull();
-        expect(c.trail).toEqual([{ x: 100, y: 100 }]);
     });
 
     it("点击闪烁记录按下时刻与位置", () => {
