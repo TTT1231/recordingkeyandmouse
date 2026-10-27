@@ -696,3 +696,159 @@ fn unchanged_keys_edit_keeps_repeats_and_original_timing() {
     assert_eq!(chord, "左Ctrl + 小键盘+");
     d.validate_execution().unwrap();
 }
+
+// 以下为键盘编辑终轮审查（M3-02）补充：穷举键名往返、多键和弦原样确认、
+// 重建事件顺序与再生名称的可继续编辑、文本/按键双向转换。
+
+fn key_scanned(vk: u32, scan: u32, down: bool) -> EventKind {
+    if down {
+        EventKind::KeyDown {
+            vk,
+            scan,
+            extended: false,
+        }
+    } else {
+        EventKind::KeyUp {
+            vk,
+            scan,
+            extended: false,
+        }
+    }
+}
+
+#[test]
+fn every_vk_name_round_trips_except_generic_modifier_fallback() {
+    // 穷举 0x01..=0xFF：vk_name 生成的名称必须能被 parse_chord 解析回同一键。
+    // 唯一例外是通用修饰键 0x10/0x11/0x12——低级钩子只回报左右变体（0xA0-0xA5），
+    // 这三个码只可能来自手工 #码 输入，解析时回落到对应左修饰键是既定行为。
+    for vk in 1..=0xFFu32 {
+        let name = vk_name(vk);
+        let parsed = parse_chord(&name)
+            .unwrap_or_else(|e| panic!("vk={vk:#04X} 名称「{name}」无法解析：{e}"));
+        let expected = match vk {
+            0x10 => 0xA0,
+            0x11 => 0xA2,
+            0x12 => 0xA4,
+            _ => vk,
+        };
+        assert_eq!(
+            parsed,
+            vec![expected],
+            "vk={vk:#04X} 的名称「{name}」往返后变成 {parsed:?}"
+        );
+    }
+}
+
+#[test]
+fn as_is_confirm_of_multi_key_chord_keeps_scancodes_repeats_and_times() {
+    let mut d = doc(
+        vec![
+            (0, key_scanned(0xA2, 0x1D, true)),
+            (120_000, key_scanned(0x41, 0x1E, true)),
+            (240_000, key_scanned(0x41, 0x1E, true)),
+            (360_000, key_scanned(0x41, 0x1E, false)),
+            (480_000, key_scanned(0xA2, 0x1D, false)),
+        ],
+        600_000,
+    );
+    let ActionKind::Keys { chord } = &d.actions[0].kind else {
+        panic!("应是键盘动作");
+    };
+    assert_eq!(chord, "左Ctrl + A");
+    assert!(
+        d.actions[0].view().detail.contains("1 次重复按下"),
+        "重复按下应在动作详情中如实标注：{}",
+        d.actions[0].view().detail
+    );
+    let before = same(&d);
+    let id = d.actions[0].id.clone();
+    // 带首尾空白的相同输入同样走原样确认，不重建事件。
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id,
+        chord: format!("  {chord}  "),
+    })
+    .unwrap();
+    assert_eq!(
+        before,
+        same(&d),
+        "原样确认不能改动多键和弦的扫描码、重复按下与真实按下/抬起时间"
+    );
+    d.validate_execution().unwrap();
+}
+
+#[test]
+fn chord_edit_rebuilds_in_order_and_regenerated_name_supports_next_edit() {
+    let mut d = doc(
+        vec![(0, key(0x41, true)), (200_000, key(0x41, false))],
+        300_000,
+    );
+    let id = d.actions[0].id.clone();
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id.clone(),
+        chord: "右Shift + → + 小键盘/".into(),
+    })
+    .unwrap();
+    let flat: Vec<(i64, bool, u32, bool)> = d
+        .compile()
+        .iter()
+        .map(|e| match e.kind {
+            EventKind::KeyDown { vk, extended, .. } => (e.time_us, true, vk, extended),
+            EventKind::KeyUp { vk, extended, .. } => (e.time_us, false, vk, extended),
+            _ => panic!("编辑后应只含按键事件"),
+        })
+        .collect();
+    // 按下按输入顺序在动作起点，抬起按逆序在动作终点；导航键带扩展标志。
+    assert_eq!(
+        flat,
+        vec![
+            (0, true, 0xA1, false),
+            (0, true, 0x27, true),
+            (0, true, 0x6F, false),
+            (200_000, false, 0x6F, false),
+            (200_000, false, 0x27, true),
+            (200_000, false, 0xA1, false),
+        ]
+    );
+    d.validate_execution().unwrap();
+    // 重建后的和弦名称由 vk_name 再生成，必须能再次被解析与编辑（往返链路）。
+    let ActionKind::Keys { chord } = &d.actions[0].kind else {
+        panic!("编辑后仍是键盘动作");
+    };
+    assert_eq!(chord, "右Shift + → + 小键盘/");
+    let before = same(&d);
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id,
+        chord: chord.clone(),
+    })
+    .unwrap();
+    assert_eq!(before, same(&d), "再生名称的原样确认不应改动事件");
+}
+
+#[test]
+fn text_action_can_become_keys_and_stays_balanced() {
+    let mut d = doc(
+        vec![
+            (0, key(0x41, true)),
+            (100_000, key(0x41, false)),
+            (300_000, key(0x42, true)),
+            (400_000, key(0x42, false)),
+        ],
+        500_000,
+    );
+    let id = d.actions[1].id.clone();
+    d.apply(EditRequest::UpdateText {
+        action_id: id.clone(),
+        text: "中".into(),
+    })
+    .unwrap();
+    d.apply(EditRequest::UpdateKeys {
+        action_id: id,
+        chord: "F5".into(),
+    })
+    .unwrap();
+    let ActionKind::Keys { chord } = &d.actions[1].kind else {
+        panic!("文本动作应可改为按键动作");
+    };
+    assert_eq!(chord, "F5");
+    d.validate_execution().unwrap();
+}

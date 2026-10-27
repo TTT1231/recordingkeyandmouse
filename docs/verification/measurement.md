@@ -46,10 +46,12 @@
 `src-tauri/tests/native_contract.rs` 包含专用 Win32 接收窗口与 EDIT 控件：
 
 - 短混合样本按消息顺序核对键盘 down/up、鼠标左右中键、双击、垂直/水平滚轮等。物理按键与 IME 生成字符分别判断。
+- 键盘保真以 lParam 为准：接收器记录原始 lParam，键盘消息位 16-23 为扫描码、位 24 为扩展键标志。修饰键的 WM_KEYDOWN wParam 是通用 VK（真实硬件同样如此），L/R 身份由扫描码+扩展位表达。
 - 明确文本样本在 EDIT 控件核对 UTF-16、中文、emoji、符号和换行。
 - 长移动样本检查固定样本事件的完整捕获、原有停顿与逐事件调度时间；该接收器不记录鼠标移动消息，因此接收消息为零不表示未执行，也不能算作混合输入验收。
 - 应用三轮执行测试读取隔离实例的任务，并等待从实际界面启动执行，再核对轮次间隔与各类消息数量。
-- 环境取消测试仅向监视窗口投递显示、挂起、会话锁定消息；实际锁屏、挂起与显示变化需另行验证。
+- 环境取消测试分两层：消息路径仅向监视窗口投递显示、挂起、会话锁定消息；真实环境测试实际改分辨率（`native_environment_display_change_cancels`，自动恢复）、锁屏（`native_environment_lock_cancels`，测试后需解锁）与睡眠（`native_environment_suspend_resumes_and_cancels`，25 秒唤醒计时器或手动唤醒）。后两项涉及打扰桌面，默认忽略、确认后单独运行。
+- UIPI 权限受限目标测试（`native_uipi_restricted_target_receives_nothing`）以同一测试二进制的 helper 模式运行两次接收器：普通权限对照组与 UAC 提权组（会弹 UAC 确认）；预期对照组收到全部固定按键，管理员组 SendInput 返回成功但 0 条消息到达。
 
 目标应用最终显示正确不能替代这些事件核对；标准 EDIT 控件通过也不代表所有应用或输入法都兼容。
 
@@ -65,6 +67,20 @@
 cargo test --test native_contract native_capture_edit_save_replay_contract -- --ignored --nocapture --test-threads=1
 cargo test --test native_contract native_unicode_global_stop_and_cleanup -- --ignored --nocapture --test-threads=1
 cargo test --test native_contract native_environment_messages_cancel_before_input -- --ignored --nocapture --test-threads=1
+cargo test --test native_contract native_keys_edit_preservation -- --ignored --nocapture --test-threads=1
+```
+
+需要打扰桌面或用户配合的真实环境测试（确认后单独运行）：
+
+```powershell
+# 真实改分辨率约 1 秒并自动恢复（屏幕闪两次）
+cargo test --test native_contract native_environment_display_change_cancels -- --ignored --nocapture --test-threads=1
+# 真实锁定桌面；测试结束后需要解锁返回
+cargo test --test native_contract native_environment_lock_cancels -- --ignored --nocapture --test-threads=1
+# 真实睡眠约 25 秒（唤醒计时器不可用时按任意键唤醒）
+cargo test --test native_contract native_environment_suspend_resumes_and_cancels -- --ignored --nocapture --test-threads=1
+# 弹一次 UAC 启动管理员接收器，验证普通权限注入被 UIPI 静默拦截
+cargo test --test native_contract native_uipi_restricted_target_receives_nothing -- --ignored --nocapture --test-threads=1
 ```
 
 短混合样本使用默认时长。长移动与停顿样本用 `REPEAT_NATIVE_SECONDS=180` 选择；例如在 PowerShell 中：

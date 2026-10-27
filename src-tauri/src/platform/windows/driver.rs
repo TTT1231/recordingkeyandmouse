@@ -15,10 +15,11 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
-    MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+    MAPVK_VK_TO_VSC_EX, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+    MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MapVirtualKeyW, SendInput,
+    VIRTUAL_KEY,
 };
 
 struct OwnedHandle(HANDLE);
@@ -214,7 +215,19 @@ fn build_input(kind: &EventKind, virt: &VirtualScreen) -> INPUT {
     match kind {
         EventKind::KeyDown { vk, scan, extended } | EventKind::KeyUp { vk, scan, extended } => {
             let up = matches!(kind, EventKind::KeyUp { .. });
-            let flags = (if *scan != 0 { KEYEVENTF_SCANCODE.0 } else { 0 })
+            // 有录制 VK 时用 VK 注入：低级钩子看到的 vkCode 与录制事件一致（捕获与
+            // 核对都以钩子层为基准）。扫描码注入会把钩子层 vkCode 翻译成通用修饰键
+            // （0x11/0x10），与录制不再一致；仅在事件缺失 VK 时才退回扫描码注入。
+            let use_scan = *vk == 0 && *scan != 0;
+            // 注入不会自动合成扫描码：事件缺扫描码（编辑重建的按键）时按当前布局从
+            // VK 合成，保证消息层 lParam 仍带物理键身份；扩展键盘键取基础扫描码，
+            // 扩展位由 KEYEVENTF_EXTENDEDKEY 表达。
+            let w_scan = if *scan != 0 || *vk == 0 {
+                *scan as u16
+            } else {
+                unsafe { (MapVirtualKeyW(*vk, MAPVK_VK_TO_VSC_EX) & 0xFF) as u16 }
+            };
+            let flags = (if use_scan { KEYEVENTF_SCANCODE.0 } else { 0 })
                 | (if *extended {
                     KEYEVENTF_EXTENDEDKEY.0
                 } else {
@@ -225,8 +238,8 @@ fn build_input(kind: &EventKind, virt: &VirtualScreen) -> INPUT {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
                     ki: KEYBDINPUT {
-                        wVk: VIRTUAL_KEY(if *scan == 0 { *vk as u16 } else { 0 }),
-                        wScan: *scan as u16,
+                        wVk: VIRTUAL_KEY(if use_scan { 0 } else { *vk as u16 }),
+                        wScan: if use_scan { *scan as u16 } else { w_scan },
                         dwFlags: KEYBD_EVENT_FLAGS(flags),
                         time: 0,
                         dwExtraInfo: REPEAT_INJECT_MARKER,
@@ -298,5 +311,89 @@ fn mouse_flags(button: MouseButton, down: bool) -> (u32, u32) {
         (MouseButton::X1, false) => (MOUSEEVENTF_XUP.0, 1),
         (MouseButton::X2, true) => (MOUSEEVENTF_XDOWN.0, 2),
         (MouseButton::X2, false) => (MOUSEEVENTF_XUP.0, 2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn virt() -> VirtualScreen {
+        VirtualScreen {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    /// 真实硬件录制同时带 VK 与扫描码：必须走 VK 注入，让低级钩子看到的 vkCode
+    /// 与录制事件一致（扫描码路径会把修饰键翻译成通用 VK，钩子层不再忠实）。
+    /// 仅 VK 缺失时才用扫描码注入；事件缺扫描码时（编辑重建）按布局从 VK 合成。
+    #[test]
+    fn recorded_keys_with_vk_inject_by_vk_even_when_scan_present() {
+        let vk_of = |input: &INPUT| unsafe { input.Anonymous.ki.wVk.0 };
+        let flags_of = |input: &INPUT| unsafe { input.Anonymous.ki.dwFlags.0 };
+        let scan_of = |input: &INPUT| unsafe { input.Anonymous.ki.wScan };
+        let down = build_input(
+            &EventKind::KeyDown {
+                vk: 0xA2,
+                scan: 0x1D,
+                extended: false,
+            },
+            &virt(),
+        );
+        assert_eq!(vk_of(&down), 0xA2);
+        assert_eq!(scan_of(&down), 0x1D);
+        assert_eq!(
+            flags_of(&down) & KEYEVENTF_SCANCODE.0,
+            0,
+            "有 VK 时不应使用扫描码注入"
+        );
+        let right = build_input(
+            &EventKind::KeyDown {
+                vk: 0xA3,
+                scan: 0x1D,
+                extended: true,
+            },
+            &virt(),
+        );
+        assert_eq!(vk_of(&right), 0xA3);
+        assert_ne!(flags_of(&right) & KEYEVENTF_EXTENDEDKEY.0, 0);
+        // 编辑重建的按键没有原始扫描码：按当前布局从 VK 合成，消息层保留物理键身份。
+        let synthesized = build_input(
+            &EventKind::KeyDown {
+                vk: 0x6B,
+                scan: 0,
+                extended: false,
+            },
+            &virt(),
+        );
+        assert_eq!(vk_of(&synthesized), 0x6B);
+        assert_eq!(scan_of(&synthesized), 0x4E, "小键盘+ 应合成扫描码 0x4E");
+        let synthesized_right = build_input(
+            &EventKind::KeyDown {
+                vk: 0xA3,
+                scan: 0,
+                extended: true,
+            },
+            &virt(),
+        );
+        assert_eq!(scan_of(&synthesized_right), 0x1D, "右Ctrl 取基础扫描码");
+        assert_ne!(
+            flags_of(&synthesized_right) & KEYEVENTF_EXTENDEDKEY.0,
+            0,
+            "扩展位仍由标志表达"
+        );
+        let scan_only = build_input(
+            &EventKind::KeyDown {
+                vk: 0,
+                scan: 0x1E,
+                extended: false,
+            },
+            &virt(),
+        );
+        assert_eq!(vk_of(&scan_only), 0);
+        assert_ne!(flags_of(&scan_only) & KEYEVENTF_SCANCODE.0, 0);
     }
 }

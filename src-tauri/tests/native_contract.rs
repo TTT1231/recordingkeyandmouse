@@ -3,7 +3,7 @@
 #![cfg(windows)]
 use repeat_lib::{
     capture::{Hotkeys, RecordingBuffer},
-    document::{EditRequest, RawRecording, TaskDocument},
+    document::{ActionKind, EditRequest, RawRecording, TaskDocument},
     event::{EventKind, MouseButton, RecordedEvent, WheelAxis},
     geometry::to_normalized_absolute,
     platform,
@@ -15,17 +15,29 @@ use repeat_lib::{
 use std::{
     cell::RefCell,
     collections::BTreeMap,
+    process::Command,
     sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
-        System::LibraryLoader::GetModuleHandleW,
-        UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+        Foundation::{CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Graphics::Gdi::{
+            CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_SUCCESSFUL,
+            ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, EnumDisplaySettingsW,
+        },
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Shutdown::LockWorkStation,
+            Threading::{
+                CREATE_WAITABLE_TIMER_MANUAL_RESET, CreateWaitableTimerExW, SetWaitableTimer,
+                TIMER_ALL_ACCESS,
+            },
+        },
+        UI::{Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
     },
-    core::w,
+    core::{PCWSTR, w},
 };
 #[derive(Clone, Debug)]
 struct Received {
@@ -33,6 +45,8 @@ struct Received {
     value: usize,
     x: i32,
     y: i32,
+    /// 原始 lParam：键盘消息的位 16-23 是扫描码、位 24 是扩展键标志。
+    lp: isize,
     at: Instant,
 }
 type Messages = Arc<Mutex<Vec<Received>>>;
@@ -59,6 +73,7 @@ unsafe extern "system" fn receiver_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             value: wp.0,
             x: (lp.0 as u16 as i16) as i32,
             y: ((lp.0 >> 16) as u16 as i16) as i32,
+            lp: lp.0,
             at: Instant::now(),
         };
         MESSAGES.with(|m| {
@@ -512,7 +527,10 @@ impl ReplayDriver for FixtureDriver {
         if !matches!(kind, EventKind::MouseMove { .. })
             && unsafe { GetForegroundWindow() }.0 as usize != self.target
         {
-            return Err("测试接收窗口失焦，未发送输入".into());
+            let mut title = [0u16; 128];
+            let len = unsafe { GetWindowTextW(GetForegroundWindow(), &mut title) };
+            let thief = String::from_utf16_lossy(&title[..len as usize]);
+            return Err(format!("测试接收窗口失焦（前台：{thief}），未发送输入"));
         }
         self.inner.inject(kind)
     }
@@ -1119,4 +1137,568 @@ fn native_environment_messages_cancel_before_input() {
     println!(
         "NATIVE_ENV display/power/session messages cancelled waiting with zero injected events"
     );
+}
+
+/// 用真实系统事件验证环境变化取消：接线与应用一致（监视窗口回调直接 fail 停止信号），
+/// 唯一计划事件在 5 秒后，触发动作在 500 毫秒后执行。返回执行结果。
+fn environment_replay_with_trigger(
+    trigger: impl FnOnce() + Send + 'static,
+) -> repeat_lib::scheduler::ExecutionOutcome {
+    let stop = StopSignal::new();
+    let copy = stop.clone();
+    let service = platform::start_input_service(Arc::new(move |action| {
+        if action == platform::HotkeyAction::EnvironmentChanged {
+            copy.fail("桌面会话、显示布局或电源状态发生变化，已停止执行");
+        }
+    }))
+    .unwrap();
+    let mut driver = platform::make_driver(&stop, &platform::snapshot_geometry()).unwrap();
+    let sender = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        trigger();
+    });
+    let outcome = run_replay(
+        &ScheduleSpec {
+            events: Arc::new(vec![RecordedEvent {
+                seq: 1,
+                time_us: 5_000_000,
+                native_time_ms: 0,
+                kind: EventKind::MouseMove { x: 500, y: 500 },
+            }]),
+            duration_us: 6_000_000,
+            rounds: 1,
+        },
+        &mut driver,
+        &stop,
+        LATE_THRESHOLD,
+        |_| {},
+    );
+    sender.join().unwrap();
+    service.shutdown();
+    outcome
+}
+
+#[test]
+#[ignore = "向专用接收窗口发送固定输入；核对键盘编辑（特殊键名/原样确认/重复按下）后的真实执行"]
+fn native_keys_edit_preservation() {
+    let receiver = Receiver::new(true);
+    let geometry = platform::snapshot_geometry();
+    let scanned = |seq: u64, time_us: i64, vk: u32, scan: u32, down: bool| RecordedEvent {
+        seq,
+        time_us,
+        native_time_ms: 0,
+        kind: if down {
+            EventKind::KeyDown {
+                vk,
+                scan,
+                extended: false,
+            }
+        } else {
+            EventKind::KeyUp {
+                vk,
+                scan,
+                extended: false,
+            }
+        },
+    };
+    let mut doc = TaskDocument::new(
+        "键盘编辑终审".into(),
+        geometry.clone(),
+        platform::current_layout_klid(),
+    );
+    doc.replace_recording(RawRecording {
+        gestures: Default::default(),
+        started_at_wall_ms: 0,
+        duration_us: 500_000,
+        events: vec![
+            scanned(1, 0, 0xA2, 0x1D, true),
+            scanned(2, 100_000, 0x6B, 0x4E, true),
+            scanned(3, 200_000, 0x6B, 0x4E, true),
+            scanned(4, 300_000, 0x6B, 0x4E, false),
+            scanned(5, 400_000, 0xA2, 0x1D, false),
+        ],
+        geometry: geometry.clone(),
+        layout_klid: platform::current_layout_klid(),
+    });
+    let ActionKind::Keys { chord } = &doc.actions[0].kind else {
+        panic!("样本应归并为键盘动作");
+    };
+    assert_eq!(chord, "左Ctrl + 小键盘+");
+    assert!(
+        doc.actions[0].view().detail.contains("1 次重复按下"),
+        "重复按下应如实标注：{}",
+        doc.actions[0].view().detail
+    );
+    let before = serde_json::to_string(&doc).unwrap();
+    let id = doc.actions[0].id.clone();
+    doc.apply(EditRequest::UpdateKeys {
+        action_id: id.clone(),
+        chord: "左Ctrl + 小键盘+".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        before,
+        serde_json::to_string(&doc).unwrap(),
+        "原样确认不得重建事件（保留重复按下、扫描码与真实时间）"
+    );
+
+    let received_vk = |receiver: &Receiver| -> Vec<(u32, usize, u16, bool)> {
+        receiver
+            .messages()
+            .iter()
+            .filter(|m| m.msg != WM_CHAR)
+            .map(|m| {
+                let scan = ((m.lp >> 16) & 0xFF) as u16;
+                let extended = (m.lp >> 24) & 1 == 1;
+                (m.msg, m.value, scan, extended)
+            })
+            .collect()
+    };
+    receiver.clear();
+    let stop = StopSignal::new();
+    let mut driver = FixtureDriver {
+        inner: platform::make_driver(&stop, &geometry).unwrap(),
+        target: receiver.hwnd,
+    };
+    let outcome = run_replay(
+        &ScheduleSpec {
+            events: Arc::new(doc.compile()),
+            duration_us: doc.duration_us,
+            rounds: 1,
+        },
+        &mut driver,
+        &stop,
+        LATE_THRESHOLD,
+        |_| {},
+    );
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert_eq!(outcome.events_injected, 5);
+    // WM_KEYDOWN 的 wParam 对修饰键是通用 VK（真实硬件左 Ctrl 同样是 VK_CONTROL）；
+    // 物理键身份由 lParam 扫描码与扩展位表达：左 Ctrl = 扫描码 0x1D 非扩展。
+    assert_eq!(
+        received_vk(&receiver),
+        vec![
+            (WM_KEYDOWN, 0x11, 0x1D, false),
+            (WM_KEYDOWN, 0x6B, 0x4E, false),
+            (WM_KEYDOWN, 0x6B, 0x4E, false),
+            (WM_KEYUP, 0x6B, 0x4E, false),
+            (WM_KEYUP, 0x11, 0x1D, false),
+        ],
+        "原样确认后的真实执行应保留重复按下与原始扫描码"
+    );
+
+    doc.apply(EditRequest::UpdateKeys {
+        action_id: id,
+        chord: "右Ctrl + `".into(),
+    })
+    .unwrap();
+    let ActionKind::Keys { chord } = &doc.actions[0].kind else {
+        panic!("编辑后仍是键盘动作");
+    };
+    assert_eq!(chord, "右Ctrl + `");
+    doc.validate_execution().unwrap();
+    receiver.clear();
+    let stop = StopSignal::new();
+    let mut driver = FixtureDriver {
+        inner: platform::make_driver(&stop, &geometry).unwrap(),
+        target: receiver.hwnd,
+    };
+    let outcome = run_replay(
+        &ScheduleSpec {
+            events: Arc::new(doc.compile()),
+            duration_us: doc.duration_us,
+            rounds: 1,
+        },
+        &mut driver,
+        &stop,
+        LATE_THRESHOLD,
+        |_| {},
+    );
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert_eq!(outcome.events_injected, 4);
+    // 右 Ctrl 的物理身份 = 扫描码 0x1D + 扩展位；反引号 = 扫描码 0x29。
+    assert_eq!(
+        received_vk(&receiver),
+        vec![
+            (WM_KEYDOWN, 0x11, 0x1D, true),
+            (WM_KEYDOWN, 0xC0, 0x29, false),
+            (WM_KEYUP, 0xC0, 0x29, false),
+            (WM_KEYUP, 0x11, 0x1D, true),
+        ],
+        "编辑后的和弦应按解析结果注入（右Ctrl + `，含扩展位）"
+    );
+    println!(
+        "NATIVE_KEYS_EDIT as_is_events=5 edited_events=4 receiver_sequences=2 p95_us={}",
+        compute_stats(&outcome.timing).p95_abs_us
+    );
+    let evidence = serde_json::json!({
+        "asIs": {"events": 5, "received": [
+            "keydown vk=0x11 scan=0x1D", "keydown vk=0x6B scan=0x4E",
+            "keydown vk=0x6B scan=0x4E (重复)", "keyup vk=0x6B scan=0x4E", "keyup vk=0x11 scan=0x1D"]},
+        "edited": {"chord": "右Ctrl + `", "events": 4, "received": [
+            "keydown vk=0x11 scan=0x1D ext=1", "keydown vk=0xC0 scan=0x29",
+            "keyup vk=0xC0 scan=0x29", "keyup vk=0x11 scan=0x1D ext=1"]},
+        "editedStats": compute_stats(&outcome.timing),
+        "note": "修饰键的 WM_KEYDOWN wParam 为通用 VK（与硬件一致）；物理身份用 lParam 扫描码+扩展位核对",
+    });
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/keys-edit-evidence.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+}
+
+/// 结束时恢复原始分辨率（无论断言结果如何）。
+struct RestoreDisplayMode(DEVMODEW);
+impl Drop for RestoreDisplayMode {
+    fn drop(&mut self) {
+        unsafe {
+            let dm = self.0;
+            let _ = ChangeDisplaySettingsExW(PCWSTR::null(), Some(&dm), None, CDS_TYPE(0), None);
+        }
+    }
+}
+
+#[test]
+#[ignore = "真实切换本机屏幕分辨率约 1-2 秒后恢复；验证真实显示变化取消执行（屏幕会闪两次）"]
+fn native_environment_display_change_cancels() {
+    unsafe {
+        let mut current = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        assert!(
+            EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut current).as_bool()
+        );
+        let mut candidate = None;
+        for i in 0..128u32 {
+            let mut dm = DEVMODEW {
+                dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                ..Default::default()
+            };
+            if !EnumDisplaySettingsW(PCWSTR::null(), ENUM_DISPLAY_SETTINGS_MODE(i), &mut dm)
+                .as_bool()
+            {
+                break;
+            }
+            if (dm.dmPelsWidth, dm.dmPelsHeight) != (current.dmPelsWidth, current.dmPelsHeight) {
+                candidate = Some(dm);
+                break;
+            }
+        }
+        let candidate = candidate.expect("本机没有可用的其他分辨率模式，无法验证真实显示变化");
+        let before = platform::snapshot_geometry();
+        let restore = RestoreDisplayMode(current);
+        let candidate_dims = (candidate.dmPelsWidth, candidate.dmPelsHeight);
+        let outcome = environment_replay_with_trigger(move || {
+            let rc =
+                ChangeDisplaySettingsExW(PCWSTR::null(), Some(&candidate), None, CDS_TYPE(0), None);
+            assert_eq!(rc, DISP_CHANGE_SUCCESSFUL, "临时切换分辨率失败：{rc:?}");
+        });
+        assert!(outcome.stopped);
+        assert_eq!(outcome.events_injected, 0);
+        assert!(
+            outcome
+                .failure
+                .as_ref()
+                .unwrap()
+                .reason
+                .contains("显示布局"),
+            "失败原因应指向显示布局：{:?}",
+            outcome.failure
+        );
+        let during = platform::snapshot_geometry();
+        assert!(
+            !before.same_layout(&during),
+            "切换后桌面几何应已变化：{before:?} -> {during:?}"
+        );
+        let current_dims = (
+            during.monitors.first().unwrap().width,
+            during.monitors.first().unwrap().height,
+        );
+        drop(restore);
+        thread::sleep(Duration::from_millis(400));
+        let after = platform::snapshot_geometry();
+        assert!(
+            before.same_layout(&after),
+            "恢复后桌面几何应回到原样：{before:?} -> {after:?}"
+        );
+        println!(
+            "NATIVE_ENV_DISPLAY candidate={candidate_dims:?} measured={current_dims:?} injected={} cancelled_with_reason=true",
+            outcome.events_injected
+        );
+    }
+}
+
+#[test]
+#[ignore = "真实锁定桌面（等同 Win+L）；测试结束后桌面保持锁定，需要你解锁返回"]
+fn native_environment_lock_cancels() {
+    let outcome = environment_replay_with_trigger(|| {
+        unsafe { LockWorkStation() }.expect("无法锁定工作站");
+    });
+    assert!(outcome.stopped);
+    assert_eq!(outcome.events_injected, 0);
+    assert!(
+        outcome
+            .failure
+            .as_ref()
+            .unwrap()
+            .reason
+            .contains("桌面会话"),
+        "失败原因应指向桌面会话：{:?}",
+        outcome.failure
+    );
+    println!(
+        "NATIVE_ENV_LOCK observed_after_us={} (桌面已锁定，请解锁返回)",
+        outcome.stop_observed_after_us.unwrap()
+    );
+}
+
+#[test]
+#[ignore = "真实让本机睡眠（25 秒后由唤醒计时器自动恢复，或按任意键唤醒）；验证挂起取消执行"]
+fn native_environment_suspend_resumes_and_cancels() {
+    unsafe {
+        // 唤醒计时器（可选）：电源策略禁用唤醒计时器时返回 None，改为提示手动唤醒。
+        let wake_timer = CreateWaitableTimerExW(
+            None,
+            None,
+            CREATE_WAITABLE_TIMER_MANUAL_RESET,
+            TIMER_ALL_ACCESS.0,
+        )
+        .ok()
+        .and_then(|timer| {
+            // 25 秒（100 纳秒单位，负值表示相对时间）；bResume=true 使系统到点自动唤醒。
+            let due: i64 = -250_000_000i64;
+            if SetWaitableTimer(timer, &due, 0, None, None, true).is_ok() {
+                Some(timer)
+            } else {
+                let _ = CloseHandle(timer);
+                None
+            }
+        });
+        if wake_timer.is_some() {
+            println!("NATIVE_ENV_SUSPEND 0.5 秒后本机将睡眠约 25 秒，随后自动唤醒……");
+        } else {
+            println!("NATIVE_ENV_SUSPEND 唤醒计时器不可用：0.5 秒后本机将睡眠，请按任意键唤醒……");
+        }
+        let outcome = environment_replay_with_trigger(|| {
+            let status = Command::new("rundll32.exe")
+                .args(["powrprof.dll,SetSuspendState", "0", "1", "0"])
+                .status()
+                .expect("无法发起睡眠");
+            assert!(status.success(), "发起睡眠失败：{status}");
+        });
+        assert!(outcome.stopped);
+        assert_eq!(outcome.events_injected, 0);
+        assert!(
+            outcome
+                .failure
+                .as_ref()
+                .unwrap()
+                .reason
+                .contains("电源状态"),
+            "失败原因应指向电源状态：{:?}",
+            outcome.failure
+        );
+        println!(
+            "NATIVE_ENV_SUSPEND observed_after_us={} (已从睡眠恢复)",
+            outcome.stop_observed_after_us.unwrap()
+        );
+        if let Some(timer) = wake_timer {
+            let _ = CloseHandle(timer);
+        }
+    }
+}
+
+/// UIPI 接收器 helper：以 REPEAT_UIPI_HELPER_DIR 环境变量运行本测试二进制时进入。
+/// 创建接收窗口、尽力获得前台焦点，写入 ready.json；监听若干秒后写入 result.json 退出。
+fn uipi_helper_main(dir: std::path::PathBuf) {
+    platform::init_process_dpi();
+    let elevated = Command::new("net.exe")
+        .arg("session")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let receiver = Receiver::new(false);
+    let focus = || unsafe {
+        let _ = SendMessageW(HWND(receiver.hwnd as *mut _), WM_APP + 12, None, None);
+    };
+    focus();
+    thread::sleep(Duration::from_millis(300));
+    let focused = unsafe { GetForegroundWindow().0 as usize } == receiver.hwnd;
+    std::fs::write(
+        dir.join("ready.json"),
+        serde_json::json!({"hwnd": receiver.hwnd, "focused": focused, "elevated": elevated})
+            .to_string(),
+    )
+    .unwrap();
+    println!(
+        "UIPI_HELPER elevated={elevated} focused={focused} hwnd={}",
+        receiver.hwnd
+    );
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(8) {
+        focus();
+        thread::sleep(Duration::from_millis(200));
+    }
+    let messages: Vec<(u32, usize)> = receiver
+        .messages()
+        .iter()
+        .map(|m| (m.msg, m.value))
+        .collect();
+    std::fs::write(
+        dir.join("result.json"),
+        serde_json::json!({
+            "elevated": elevated,
+            "focused": focused,
+            "messages": messages,
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+fn uipi_wait_file(path: &std::path::Path, timeout: Duration) -> serde_json::Value {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(value) = serde_json::from_str(&text)
+        {
+            return value;
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    panic!("等待 {:?} 超时：{}", timeout, path.display());
+}
+
+fn uipi_assert_foreground(hwnd: usize, timeout: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if unsafe { GetForegroundWindow().0 as usize } == hwnd {
+            return;
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
+    panic!("接收窗口 {hwnd} 未能在 {timeout:?} 内保持前台焦点，未发送测试输入");
+}
+
+fn uipi_inject_sample_keys() {
+    for vk in [0x41u32, 0x6B, 0x09] {
+        external(key(vk, true));
+        external(key(vk, false));
+        thread::sleep(Duration::from_millis(60));
+    }
+}
+
+#[test]
+#[ignore = "需要一次 UAC 确认启动管理员接收器；验证普通权限注入到管理员目标被 UIPI 静默拦截"]
+fn native_uipi_restricted_target_receives_nothing() {
+    if let Some(dir) = std::env::var_os("REPEAT_UIPI_HELPER_DIR") {
+        uipi_helper_main(std::path::PathBuf::from(dir));
+        return;
+    }
+    let exe = std::env::current_exe().unwrap();
+    let args = "--exact native_uipi_restricted_target_receives_nothing --ignored --nocapture --test-threads=1";
+    let dir = std::env::temp_dir().join(format!("repeat-uipi-{}", repeat_lib::document::new_id()));
+    let control_dir = dir.join("control");
+    let elevated_dir = dir.join("elevated");
+    std::fs::create_dir_all(&control_dir).unwrap();
+    std::fs::create_dir_all(&elevated_dir).unwrap();
+    let key_messages = |value: &serde_json::Value| -> usize {
+        value["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                let msg = m[0].as_u64().unwrap() as u32;
+                let vk = m[1].as_u64().unwrap_or(0);
+                matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP)
+                    && [0x41u64, 0x6B, 0x09].contains(&vk)
+            })
+            .count()
+    };
+
+    // 对照组：同一接收器以普通权限运行，注入必须到达（证明注入与接收链路本身可用）。
+    let mut control_child = Command::new(&exe)
+        .args(args.split_whitespace())
+        .env("REPEAT_UIPI_HELPER_DIR", &control_dir)
+        .spawn()
+        .unwrap();
+    let ready = uipi_wait_file(&control_dir.join("ready.json"), Duration::from_secs(20));
+    assert!(
+        !ready["elevated"].as_bool().unwrap(),
+        "对照组不应是管理员权限"
+    );
+    uipi_assert_foreground(
+        ready["hwnd"].as_u64().unwrap() as usize,
+        Duration::from_secs(5),
+    );
+    uipi_inject_sample_keys();
+    let control = uipi_wait_file(&control_dir.join("result.json"), Duration::from_secs(20));
+    let _ = control_child.wait();
+    let control_keys = key_messages(&control);
+    assert!(
+        control_keys >= 6,
+        "对照组应收到全部固定按键消息，实际 {control_keys} 条"
+    );
+
+    // 实验组：UAC 提权同一接收器（会弹 UAC 确认），普通权限注入同一样本。
+    // ShellExecuteW 继承本进程环境，因此先设置 helper 目录再启动。
+    unsafe { std::env::set_var("REPEAT_UIPI_HELPER_DIR", &elevated_dir) };
+    let exe_w: Vec<u16> = exe
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let args_w: Vec<u16> = args.encode_utf16().chain(std::iter::once(0)).collect();
+    let run = unsafe {
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            PCWSTR(exe_w.as_ptr()),
+            PCWSTR(args_w.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    assert!(
+        run.0 as isize > 32,
+        "管理员接收器未能启动（UAC 被拒绝或失败）"
+    );
+    let ready = uipi_wait_file(&elevated_dir.join("ready.json"), Duration::from_secs(90));
+    assert!(
+        ready["elevated"].as_bool().unwrap(),
+        "UAC 后接收器必须是管理员权限"
+    );
+    assert!(
+        ready["focused"].as_bool().unwrap(),
+        "管理员接收器应已获得前台焦点"
+    );
+    uipi_assert_foreground(
+        ready["hwnd"].as_u64().unwrap() as usize,
+        Duration::from_secs(5),
+    );
+    uipi_inject_sample_keys();
+    let elevated = uipi_wait_file(&elevated_dir.join("result.json"), Duration::from_secs(30));
+    let elevated_keys = key_messages(&elevated);
+    assert_eq!(
+        elevated_keys, 0,
+        "管理员目标不应收到任何注入按键；SendInput 全部返回成功但消息被 UIPI 静默拦截"
+    );
+    println!(
+        "NATIVE_UIPI control_messages={control_keys} elevated_messages={elevated_keys} sendinput_returned_success=true"
+    );
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/uipi-evidence.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "control": {"elevated": false, "keyMessages": control_keys},
+            "elevated": {"elevated": true, "keyMessages": elevated_keys},
+            "sample": "A / 小键盘+ / Tab 各一次按下抬起",
+            "conclusion": "普通权限 SendInput 返回成功，管理员目标 0 条消息：UIPI 静默拦截",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
