@@ -194,7 +194,15 @@ export function Timeline(p: Props) {
         // 只在尺寸变化时重置画布；切换任务时不要无谓清空重绘，避免闪帧。
         if (canvas.width !== backingWidth) canvas.width = backingWidth;
         if (canvas.height !== backingHeight) canvas.height = backingHeight;
-        ctx.setTransform(backingWidth / width, 0, 0, backingHeight / height, 0, 0);
+        const scaleX = backingWidth / width,
+            scaleY = backingHeight / height;
+        ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        // 文字行起点与 1px 描边对齐到设备像素网格，否则 WebView2 会按亚像素摆放字形，
+        // 笔画被摊进相邻像素而发糊。对齐基准是实际变换缩放（位图/CSS 尺寸），不是 dpr。
+        const snapX = (v: number) => Math.round(v * scaleX) / scaleX;
+        const snapY = (v: number) => Math.round(v * scaleY) / scaleY;
+        const snapEdgeX = (v: number) => snapX(v) + 0.5 / scaleX;
+        const snapEdgeY = (v: number) => snapY(v) + 0.5 / scaleY;
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
@@ -225,15 +233,13 @@ export function Timeline(p: Props) {
             if (!minor && !(x > 0 && endX > 0 && Math.abs(x - endX) < 48)) {
                 ctx.fillStyle = MUTED;
                 const label = formatTimelineTick(t);
+                ctx.textAlign = "left";
                 if (x < 24) {
-                    ctx.textAlign = "left";
                     ctx.fillText(label, 2, 11);
                 } else if (x > width - 24) {
-                    ctx.textAlign = "right";
-                    ctx.fillText(label, width - 2, 11);
+                    ctx.fillText(label, snapX(width - 2 - ctx.measureText(label).width), 11);
                 } else {
-                    ctx.textAlign = "center";
-                    ctx.fillText(label, x, 11);
+                    ctx.fillText(label, snapX(x - ctx.measureText(label).width / 2), 11);
                 }
             }
         }
@@ -244,10 +250,10 @@ export function Timeline(p: Props) {
             .sort((a, b) => a.startUs - b.startUs);
         const segments = recordingSegments(displayRows, displayDurationUs);
         const selected = displayRows.find(action => action.id === p.selectedId && action.kind.type !== "wait");
-        const top = laneTop(0) + (LANE_BASE - RECORDING_HEIGHT) / 2;
+        const top = snapEdgeY(laneTop(0) + (LANE_BASE - RECORDING_HEIGHT) / 2);
         for (const segment of segments) {
-            const left = Math.max(PAD, xOf(segment.start));
-            const right = Math.min(width - PAD, xOf(segment.end));
+            const left = snapEdgeX(Math.max(PAD, xOf(segment.start)));
+            const right = snapEdgeX(Math.min(width - PAD, xOf(segment.end)));
             if (right <= left) continue;
             ctx.fillStyle = RIBBON_BG;
             ctx.strokeStyle =
@@ -258,10 +264,10 @@ export function Timeline(p: Props) {
             ctx.stroke();
         }
         for (const action of waits) {
-            const left = Math.max(PAD, xOf(action.startUs));
-            const right = Math.min(width - PAD, xOf(action.endUs));
+            const left = snapEdgeX(Math.max(PAD, xOf(action.startUs)));
+            const right = snapEdgeX(Math.min(width - PAD, xOf(action.endUs)));
             if (right <= left) continue;
-            const waitTop = laneTop(1) + (LANE_BASE - WAIT_HEIGHT) / 2;
+            const waitTop = snapEdgeY(laneTop(1) + (LANE_BASE - WAIT_HEIGHT) / 2);
             ctx.fillStyle = "#f5f1e8";
             ctx.strokeStyle = action.id === p.selectedId ? "#796342" : "#d8cdb7";
             ctx.lineWidth = 1;
@@ -271,12 +277,13 @@ export function Timeline(p: Props) {
             if (right - left > 64) {
                 ctx.fillStyle = "#796342";
                 ctx.font = `12px ${FIGURES}`;
-                ctx.textAlign = "center";
+                ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
+                const text = formatSeconds(action.endUs - action.startUs);
                 ctx.fillText(
-                    formatSeconds(action.endUs - action.startUs),
-                    (left + right) / 2,
-                    waitTop + WAIT_HEIGHT / 2,
+                    text,
+                    snapX((left + right) / 2 - ctx.measureText(text).width / 2),
+                    snapY(waitTop + WAIT_HEIGHT / 2),
                 );
                 ctx.textBaseline = "alphabetic";
             }
@@ -292,8 +299,13 @@ export function Timeline(p: Props) {
             ctx.stroke();
             ctx.fillStyle = MUTED;
             ctx.font = `12px ${FIGURES}`;
-            ctx.textAlign = endX > width - 34 ? "right" : "left";
-            ctx.fillText("结束", endX + (endX > width - 34 ? -4 : 4), 11);
+            ctx.textAlign = "left";
+            const endLabel = "结束";
+            ctx.fillText(
+                endLabel,
+                endX > width - 34 ? snapX(endX - 4 - ctx.measureText(endLabel).width) : snapX(endX + 4),
+                11,
+            );
         }
         const head = xOf(p.timeUs);
         if (head >= 0 && head <= width) {
