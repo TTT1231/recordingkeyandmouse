@@ -1,4 +1,4 @@
-// 展示格式化：只描述事件本身的事实，不推测目标控件（FR-06）。
+// 展示格式化：只描述事件本身的事实，不推测目标控件。
 
 import type { EventKind, MouseButton } from "./types";
 

@@ -1,4 +1,4 @@
-//! 真机原生链路集成测试（M1-03/M1-04 事件级证据）。
+//! 真机原生链路集成测试：核对钩子捕获、真实注入与截止时间。
 //!
 //! 与单元测试的模拟驱动不同，这里走真实的 Windows 低级钩子与 SendInput：
 //! - `native_hooks_capture_injected_input`：安装钩子后用 SendInput 注入外部输入（不带

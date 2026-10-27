@@ -1,4 +1,4 @@
-/* 设计体系对齐 docs/index.html 交互原型：灰色画框 + 白色圆角工作卡片。 */
+/* 工作区视觉：灰色画框 + 白色圆角工作卡片。 */
 :root {
     --frame: #f2f3f4;
     --surface: #fff;
@@ -1043,7 +1043,7 @@ body.is-resizing-sidebar .app-layout {
     scrollbar-color: var(--control) transparent;
     outline: none;
 }
-/* 动作行保持一行：左边一句“做了什么”，坐标或内容作为次级参数紧跟在后面（FR-06）。 */
+/* 动作行保持一行：左边一句“做了什么”，坐标或内容作为次级参数紧跟在后面。 */
 .event-row {
     position: relative;
     display: flex;

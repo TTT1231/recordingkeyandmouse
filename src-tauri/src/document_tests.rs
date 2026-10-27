@@ -697,7 +697,7 @@ fn unchanged_keys_edit_keeps_repeats_and_original_timing() {
     d.validate_execution().unwrap();
 }
 
-// 以下为键盘编辑终轮审查（M3-02）补充：穷举键名往返、多键和弦原样确认、
+// 键盘编辑回归：穷举键名往返、多键和弦原样确认、
 // 重建事件顺序与再生名称的可继续编辑、文本/按键双向转换。
 
 fn key_scanned(vk: u32, scan: u32, down: bool) -> EventKind {

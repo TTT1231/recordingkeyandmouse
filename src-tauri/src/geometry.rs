@@ -55,8 +55,8 @@ impl DesktopGeometry {
         })
     }
 
-    /// 执行前检查：布局与录制时不一致则阻止执行（2026-10-26 定稿：不默默按比例猜测新目标）。
-    /// 只比较物理矩形与名称；DPI 变化不影响物理坐标，单独提示。
+    /// 执行前检查：布局与录制时不一致则阻止执行，不按比例猜测新目标。
+    /// 只比较物理矩形与名称；DPI 值不参与此判断，不代表不同缩放环境已经通过原生验证。
     pub fn same_layout(&self, other: &DesktopGeometry) -> bool {
         let strip = |g: &DesktopGeometry| -> Vec<(String, i32, i32, i32, i32)> {
             g.monitors

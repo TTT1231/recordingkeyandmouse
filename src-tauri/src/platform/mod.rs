@@ -1,6 +1,6 @@
-//! 平台层：把当前实际用到的 Windows 捕获、注入、坐标和停止操作隔离在小模块里（M1-02）。
+//! 平台层：隔离 Windows 捕获、注入、坐标和停止操作。
 //! 不依赖界面组件或数据库；测试用可替换的时钟/注入驱动（见 `scheduler::ReplayDriver`）。
-//! Linux X11 后端在 M6 接入；此前非 Windows 平台使用明确报错的占位实现。
+//! Linux X11 后端尚未实现；非 Windows 平台使用明确报错的占位实现。
 
 use std::sync::{Arc, Mutex};
 

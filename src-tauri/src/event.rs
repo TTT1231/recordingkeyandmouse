@@ -1,11 +1,11 @@
 //! 事件模型：原始输入事件与其承载的数据。
 //!
 //! 约束（ADR-0001 第 5 节）：时间使用相对录制起点的整数微秒，配合事件序号共同确定顺序；
-//! 按下/抬起、坐标、滚轮原生增量必须完整保留；本模块不产生面向用户的动作归并（M3 范围）。
+//! 按下/抬起、坐标、滚轮原生增量必须完整保留；面向用户的动作归并由 document 模块负责。
 
 use serde::{Deserialize, Serialize};
 
-/// 鼠标按键。侧键（X1/X2）按 2026-10-26 定稿：如实捕获与回放，界面标注首版不可参数编辑。
+/// 鼠标按键。侧键（X1/X2）如实捕获与回放，当前不提供参数编辑。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MouseButton {
@@ -28,7 +28,7 @@ impl MouseButton {
     }
 }
 
-/// 滚轮轴。delta 保存平台原生增量（Windows 下为 WHEEL_DELTA=120 的整数倍），不做单位换算。
+/// 滚轮轴。delta 保存平台原生增量（Windows 通常每格为 WHEEL_DELTA=120），不做单位换算。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WheelAxis {

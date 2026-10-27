@@ -1,63 +1,54 @@
 # Repeat
 
-桌面键鼠录制、编辑与回放工具：在指定的开始、停止之间连续监听系统键鼠操作，保存动作、轨迹与时间关系，编辑后按原节奏复现。面向 Windows 与 Linux X11；界面适配桌面窗口，不做手机端。
+Repeat 是一款桌面键鼠录制、编辑与回放工具。录下一段操作，调整需要修改的动作，再按原有节奏重复执行，让日常重复操作更省事。
 
-## 开发启动
+## 功能
 
-1. `pnpm install` 后运行 `pnpm tauri dev` 启动桌面应用。
-2. 在应用中创建任务，开始录制后操作目标应用；F8 启停录制，F9 停止系统执行。
+- **连续录制**：记录键盘、鼠标及操作之间的停顿，保留输入顺序和移动轨迹。
+- **动作编辑**：调整鼠标位置、点击方式、滚动量和键盘输入，插入文本或等待，支持撤销与重做。
+- **时间线预览**：联动查看录制内容、时间位置和指针反馈，可导入参考图辅助查看与选点。
+- **重复执行**：支持单次、自定义次数和无限循环，通过按钮或全局快捷键停止。
+- **任务管理**：分别保存多项录制，修改自动保存在本机。
+- **独立演示**：通过内置练习熟悉查看与编辑操作，练习数据与个人任务隔离。
 
-开发进度、已验证范围和剩余任务统一见[实施计划](docs/implementation-plan.md)。原生录放的验证步骤与接收器见[验证材料](docs/verification/measurement.md)。
+## 使用
 
-## 使用方式
+1. 新建或选择任务，点击「开始录制」或按 F8，然后操作目标应用。
+2. 点击停止或按 F8 结束录制。新录制成功保存后替换当前内容；「放弃本次录制」保留原任务。
+3. 单击录制内容定位预览，右键菜单可编辑、插入等待、插入文本或删除；选中动作后也可按 F2 编辑。
+4. 「预览」只在应用内播放；「执行到系统」会实际操作桌面。执行前有 3 秒切换目标应用，可随时点击停止或按 F9 结束。
 
-- 创建任务，点击“开始录制”后操作目标应用；点击停止或按 F8 结束。新录制成功保存后替换当前内容，“放弃本次录制”保留原任务。
-- 录制内容单击定位；右键菜单可以编辑动作、插入等待、插入文本或删除。双击不再打开编辑。时间线点击或拖动定位，滚轮和上方按钮缩放；不显示悬停浮层，不提供动作时间拖动或双击编辑。
-- 标题栏左侧提供可见的撤销 / 重做按钮，与 Ctrl+Z / Ctrl+Y 等价；没有历史或正在录制 / 执行时禁用。撤销历史只在当前会话保留。
-- 预览只在应用内播放。执行默认只执行一次，可切换自定义 1–100000 次或无限循环；开始前有 3 秒切换目标应用，F9 可停止。快捷键可在帮助菜单调整。
-- 参考图由用户手动导入，只供轨迹对照。任务和图片保存在此设备的应用数据目录；关于页不再提供诊断信息入口。
+F8 / F9 可在「帮助 → 快捷键设置」中调整。首次使用可从「帮助 → 使用演示」进入练习空间。
 
-## 文档
+## 从源码运行（Windows）
 
-产品需求、技术方案与实施计划位于本仓库 [docs/](docs/README.md)：
+开发环境：
 
-| 文档                                                            | 用途                                         |
-| --------------------------------------------------------------- | -------------------------------------------- |
-| [功能需求](docs/requirements.md)                                | 产品范围、界面行为与验收条件                 |
-| [技术方案 ADR-0001](docs/decisions/0001-technical-selection.md) | 架构职责、平台输入后端、事件模型、调度与存储 |
-| [实施计划](docs/implementation-plan.md)                         | 实施步骤、依赖与验收                         |
-| [历史交互原型](docs/index.html)                                 | 历史交互参考（画布内模拟；与当前实现有差异） |
+- Node ≥ 24、pnpm 12
+- Rust stable
+- MSVC C++ 构建工具、Windows SDK、WebView2 运行时
 
-## 前置条件
-
-- Node ≥ 24 与 pnpm ≥ 12
-- Rust stable（经 [rustup](https://rustup.rs/) 安装）
-- Windows 构建需要 MSVC C++ 构建工具、Windows SDK（[VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)）与 WebView2 运行时。
-- 在 Git Bash 里跑 cargo 前，需把 MSVC 的 `bin\Hostx64\x64` 加入 PATH，避免命中 Git 自带的同名 `link.exe`（见 [AGENTS.md](AGENTS.md)）
-
-## 常用命令
-
-| 命令                        | 作用                                   |
-| --------------------------- | -------------------------------------- |
-| `pnpm install`              | 安装依赖并注册 git hooks（lefthook）   |
-| `pnpm tauri dev`            | 启动桌面应用（Rust 编译 + 前端热更新） |
-| `pnpm tauri build`          | 构建发布包                             |
-| `pnpm lint` / `pnpm format` | oxlint 检查 / oxfmt 格式化             |
-| `pnpm typecheck`            | TypeScript 类型检查                    |
-| `pnpm test`                 | vitest 单元测试                        |
-
-Rust 侧检查在 `src-tauri/` 下执行：`cargo fmt --all`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。CI（[ci.yml](.github/workflows/ci.yml)）在推送到 main 和提交 PR 时运行前端检查与 Windows 上的 Rust 检查。
-
-## 目录结构
-
-```
-src/          前端：任务、预览、时间线与编辑界面（React）
-src-tauri/    Rust：桌面应用与输入引擎（捕获、调度、注入、存储）
-docs/         需求、技术方案、实施计划与交互原型
+```powershell
+pnpm install
+pnpm tauri dev
 ```
 
-两层的职责边界与依赖方向见 [ADR-0001](docs/decisions/0001-technical-selection.md) 第 3 节；输入热路径不允许经过前端。
+`pnpm dev` 仅启动前端开发服务，系统录放需使用 Tauri 桌面应用。
 
-## 测试
+| 命令 | 用途 |
+| --- | --- |
+| `pnpm tauri build` | 构建桌面发布包 |
+| `pnpm lint` / `pnpm typecheck` / `pnpm test` | 前端静态检查与单元测试 |
+| `pnpm format` | 格式化 |
 
-前端测试按 `*.test.ts` 命名，由 vitest 运行；Rust 测试由 `cargo test` 运行。真实键鼠行为需要接收端事件记录与原生验证，方法见[实施计划第 5 节](docs/implementation-plan.md)与[测量方案](docs/verification/measurement.md)。
+Rust 检查与 Git Bash 配置见 [AGENTS.md](AGENTS.md#验证改动)。
+
+## 项目文档
+
+| 内容 | 入口 |
+| --- | --- |
+| 开发约定与检查命令 | [AGENTS.md](AGENTS.md) |
+| 架构、编辑语义、调度与存储 | [技术说明](docs/decisions/0001-technical-selection.md) |
+| 测试方法与验证记录 | [测试说明](docs/testing.md) |
+
+项目使用 Tauri 2、React、TypeScript 和 Rust。界面在 [src/](src/)，原生引擎在 [src-tauri/src/](src-tauri/src/)。

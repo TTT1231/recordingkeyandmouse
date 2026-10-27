@@ -13,7 +13,7 @@ use crate::event::{EventKind, RecordedEvent};
 /// 待处理队列上限。控制线程定期排空，整个录制没有按事件数截断；积压溢出即判废并报告。
 pub const RECORD_BUFFER_CAP: usize = 2_000_000;
 
-/// 录制控制快捷键（F8 启停录制、F9 停止执行，2026-10-26 定稿）。
+/// 默认控制快捷键：F8 启停录制、F9 停止执行。
 pub const HOTKEY_TOGGLE_RECORD_VK: u32 = 0x77; // VK_F8
 pub const HOTKEY_STOP_EXEC_VK: u32 = 0x78; // VK_F9
 
@@ -27,7 +27,7 @@ const MODIFIER_VKS: &[u32] = &[
     0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, // 左右 Shift / Ctrl / Alt
 ];
 
-/// 快捷键过滤：按定稿，录制控制快捷键（裸按，无修饰键）不混入录制内容；
+/// 快捷键过滤：录制控制快捷键（裸按，无修饰键）不混入录制内容；
 /// 带修饰键的同键位组合（如 Ctrl+F8）是用户真实输入，必须保留。
 #[derive(Debug)]
 pub struct CaptureFilter {

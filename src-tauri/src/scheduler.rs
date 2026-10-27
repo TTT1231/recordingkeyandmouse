@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::event::EventKind;
 
-/// 注入严重落后的判定阈值（内部自检参数，2026-10-26 定稿初值 1000ms，按实测调整）。
+/// 注入严重落后的判定阈值，按实际测量调整。
 pub const LATE_THRESHOLD: Duration = Duration::from_millis(1000);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,7 +182,7 @@ pub struct ExecutionOutcome {
     pub late_threshold_ms: u64,
 }
 
-/// 执行统计（M0-03 测量字段）。偏差绝对值的分位数、首轮首末误差与累计漂移。
+/// 执行统计：偏差绝对值的分位数、首轮首末误差与累计漂移。
 #[derive(Clone, Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TimingStats {

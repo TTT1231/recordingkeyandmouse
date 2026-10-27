@@ -22,7 +22,7 @@ use crate::geometry::{DesktopGeometry, MonitorInfo};
 pub const REPEAT_INJECT_MARKER: usize = 0x0052_4550_4541_5401;
 
 /// 声明 Per-Monitor V2 DPI 感知：钩子与注入坐标统一为物理像素。
-/// 失败（如清单已设置或系统过旧）不阻塞启动；坐标差异在 M1-06 原生验证中核对。
+/// 失败（如清单已设置或系统过旧）不阻塞启动；坐标差异需在原生环境核对。
 pub fn init_process_dpi() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT(
