@@ -546,6 +546,8 @@ export default function App() {
                                     setPicking(false);
                                 }}
                                 onAddReference={() => openDialog({ type: "reference" })}
+                                timelineOpen={timelineOpen}
+                                onCloseTimeline={() => setTimelineOpen(false)}
                             />
                         </div>
                         {

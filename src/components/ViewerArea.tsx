@@ -21,6 +21,8 @@ interface Props {
     onSelectAction: (action: ActionView) => void;
     onPick?: (x: number, y: number) => void;
     onAddReference?: () => void;
+    timelineOpen?: boolean;
+    onCloseTimeline?: () => void;
 }
 function practiceHit(x: number, y: number): number | "save" | "submit" | null {
     if (x >= 320 && x <= 910) {
@@ -436,6 +438,17 @@ export function ViewerArea(p: Props) {
                         <option value={1}>原速</option>
                         <option value={2}>2 倍</option>
                     </select>
+                    {p.timelineOpen && (
+                        <button
+                            type="button"
+                            className="icon-button timeline-close"
+                            aria-label="关闭时间线"
+                            title="关闭时间线"
+                            onClick={p.onCloseTimeline}
+                        >
+                            <Icon name="x" size={16} />
+                        </button>
+                    )}
                 </div>
             )}
         </section>
