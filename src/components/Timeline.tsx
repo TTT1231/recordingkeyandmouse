@@ -235,11 +235,11 @@ export function Timeline(p: Props) {
                 const label = formatTimelineTick(t);
                 ctx.textAlign = "left";
                 if (x < 24) {
-                    ctx.fillText(label, 2, 11);
+                    ctx.fillText(label, snapX(2), snapY(11));
                 } else if (x > width - 24) {
-                    ctx.fillText(label, snapX(width - 2 - ctx.measureText(label).width), 11);
+                    ctx.fillText(label, snapX(width - 2 - ctx.measureText(label).width), snapY(11));
                 } else {
-                    ctx.fillText(label, snapX(x - ctx.measureText(label).width / 2), 11);
+                    ctx.fillText(label, snapX(x - ctx.measureText(label).width / 2), snapY(11));
                 }
             }
         }
@@ -294,8 +294,8 @@ export function Timeline(p: Props) {
             ctx.strokeStyle = RIBBON_LINE;
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(endX + 0.5, RULER - 4);
-            ctx.lineTo(endX + 0.5, bottom);
+            ctx.moveTo(snapEdgeX(endX), RULER - 4);
+            ctx.lineTo(snapEdgeX(endX), bottom);
             ctx.stroke();
             ctx.fillStyle = MUTED;
             ctx.font = `12px ${FIGURES}`;
@@ -304,7 +304,7 @@ export function Timeline(p: Props) {
             ctx.fillText(
                 endLabel,
                 endX > width - 34 ? snapX(endX - 4 - ctx.measureText(endLabel).width) : snapX(endX + 4),
-                11,
+                snapY(11),
             );
         }
         const head = xOf(p.timeUs);
@@ -312,8 +312,8 @@ export function Timeline(p: Props) {
             ctx.strokeStyle = RECORD;
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(head + 0.5, RULER - 9);
-            ctx.lineTo(head + 0.5, height - 1);
+            ctx.moveTo(snapEdgeX(head), RULER - 9);
+            ctx.lineTo(snapEdgeX(head), height - 1);
             ctx.stroke();
             ctx.fillStyle = RECORD;
             ctx.beginPath();
