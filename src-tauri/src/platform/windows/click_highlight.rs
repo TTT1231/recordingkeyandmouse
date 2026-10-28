@@ -5,7 +5,9 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, DeleteObject};
+use windows::Win32::Graphics::Gdi::{
+    CombineRgn, CreateEllipticRgn, CreateSolidBrush, DeleteObject, RGN_DIFF, SetWindowRgn,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, HWND_TOPMOST, LWA_ALPHA, MSG,
@@ -80,67 +82,54 @@ fn run(receiver: mpsc::Receiver<(i32, i32)>, closed: &AtomicBool) {
             let _ = DeleteObject(brush.into());
             return;
         }
-        let mut windows = Vec::new();
-        for _ in 0..4 {
-            match CreateWindowExW(
-                WS_EX_LAYERED
-                    | WS_EX_TRANSPARENT
-                    | WS_EX_NOACTIVATE
-                    | WS_EX_TOOLWINDOW
-                    | WS_EX_TOPMOST,
-                w!("RepeatClickHighlight"),
-                w!(""),
-                WS_POPUP,
-                0,
-                0,
-                1,
-                1,
-                None,
-                None,
-                Some(instance),
-                None,
-            ) {
-                Ok(window) => {
-                    if SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA).is_err() {
-                        let _ = DestroyWindow(window);
-                        break;
-                    }
-                    windows.push(window);
-                }
-                Err(_) => break,
+        let window = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            w!("RepeatClickHighlight"),
+            w!(""),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            None,
+            None,
+            Some(instance),
+            None,
+        );
+        if let Ok(window) = window {
+            let outer = CreateEllipticRgn(0, 0, 34, 34);
+            let inner = CreateEllipticRgn(3, 3, 31, 31);
+            let ready = !outer.is_invalid()
+                && !inner.is_invalid()
+                && CombineRgn(Some(outer), Some(outer), Some(inner), RGN_DIFF).0 != 0
+                && SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA).is_ok()
+                && SetWindowRgn(window, Some(outer), true) != 0;
+            if !inner.is_invalid() {
+                let _ = DeleteObject(inner.into());
             }
-        }
-        if windows.len() == 4 {
+            // A successful SetWindowRgn transfers ownership to Windows.
+            if !ready && !outer.is_invalid() {
+                let _ = DeleteObject(outer.into());
+            }
             let mut deadline = None;
-            while !closed.load(Ordering::Acquire) {
+            while ready && !closed.load(Ordering::Acquire) {
                 if let Ok((x, y)) = receiver.recv_timeout(Duration::from_millis(16)) {
                     if closed.load(Ordering::Acquire) {
                         break;
                     }
-                    // Four short strokes around the real physical click point, not an inferred control boundary.
-                    let rects = [
-                        (x - 17, y - 17, 34, 3),
-                        (x - 17, y + 14, 34, 3),
-                        (x - 17, y - 14, 3, 28),
-                        (x + 14, y - 14, 3, 28),
-                    ];
-                    for (&window, (left, top, width, height)) in windows.iter().zip(rects) {
-                        let _ = SetWindowPos(
-                            window,
-                            Some(HWND_TOPMOST),
-                            left,
-                            top,
-                            width,
-                            height,
-                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                        );
-                    }
+                    let _ = SetWindowPos(
+                        window,
+                        Some(HWND_TOPMOST),
+                        x - 17,
+                        y - 17,
+                        34,
+                        34,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
                     deadline = Some(Instant::now() + DISPLAY_TIME);
                 }
                 if deadline.is_some_and(|at| Instant::now() >= at) {
-                    for &window in &windows {
-                        let _ = ShowWindow(window, SW_HIDE);
-                    }
+                    let _ = ShowWindow(window, SW_HIDE);
                     deadline = None;
                 }
                 let mut msg = MSG::default();
@@ -149,8 +138,6 @@ fn run(receiver: mpsc::Receiver<(i32, i32)>, closed: &AtomicBool) {
                     DispatchMessageW(&msg);
                 }
             }
-        }
-        for window in windows {
             let _ = DestroyWindow(window);
         }
         let _ = UnregisterClassW(w!("RepeatClickHighlight"), Some(instance));
@@ -237,7 +224,7 @@ mod tests {
             UP.store(0, Ordering::Relaxed);
             let highlight = ClickHighlight::start().expect("视觉线程启动失败");
             highlight.show(x, y);
-            let sample = (x - 10, y - 16);
+            let sample = (x, y - 16);
             let mut msg = MSG::default();
             let until = Instant::now() + Duration::from_millis(300);
             while Instant::now() < until {
@@ -248,6 +235,8 @@ mod tests {
             }
             let dc = GetDC(None);
             let before = GetPixel(dc, sample.0, sample.1);
+            let center = GetPixel(dc, x, y);
+            let corner = GetPixel(dc, x - 16, y - 16);
             let _ = ReleaseDC(None, dc);
             let stop = StopSignal::new();
             let mut driver = crate::platform::make_driver(&stop, &geometry).unwrap();
@@ -294,6 +283,8 @@ mod tests {
                 "highlightAtPhysical": {"x": x, "y": y},
                 "injectedAtPhysical": {"x": sample.0, "y": sample.1},
                 "strokeColor": before.0,
+                "centerColor": center.0,
+                "cornerColor": corner.0,
                 "pixelAfterHide": after.0,
                 "receiverEvents": {"WM_LBUTTONDOWN": count.0, "WM_LBUTTONUP": count.1}
             });
@@ -301,6 +292,8 @@ mod tests {
                 .join("target/click-highlight-evidence.json");
             std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
             assert_eq!(before, COLORREF(0x00ff_842e), "高亮像素应为蓝色");
+            assert_ne!(center, before, "圆环中心应透明");
+            assert_ne!(corner, before, "圆环角落应透明");
             assert_ne!(after, before, "停止后高亮应消失");
             assert_eq!(count, (1, 1), "点击应穿透到接收器");
         }

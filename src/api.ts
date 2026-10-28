@@ -19,8 +19,8 @@ export const taskHistory = (doc: DocumentView, redo = false) =>
     invoke<WorkspaceView>("task_history", { ...identity(doc), redo });
 export const setHotkeys = (hotkeys: Hotkeys) => invoke<WorkspaceView>("set_hotkeys", { hotkeys });
 export const demoMode = (enter: boolean) => invoke<WorkspaceView>("demo_mode", { enter });
-export const startExecution = (doc: DocumentView, loopCount: number) =>
-    invoke<SessionSnapshot>("start_execution", { ...identity(doc), loopCount });
+export const startExecution = (doc: DocumentView, loopCount: number, speed: number) =>
+    invoke<SessionSnapshot>("start_execution", { ...identity(doc), loopCount, speed });
 export const stopExecution = () => invoke<SessionSnapshot>("stop_execution");
 export const clearError = () => invoke<void>("clear_error");
 export const onStateChanged = (callback: (state: SessionSnapshot) => void) =>

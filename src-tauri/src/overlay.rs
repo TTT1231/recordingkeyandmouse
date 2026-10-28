@@ -70,11 +70,11 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .iter()
         .enumerate()
     {
-        {
+        for mode in ["execution", "recording"] {
             let border = WebviewWindowBuilder::new(
                 app,
-                format!("replay-border-{index}"),
-                WebviewUrl::App("execution-frame.html".into()),
+                format!("replay-border-{mode}-{index}"),
+                WebviewUrl::App(format!("execution-frame.html?mode={mode}").into()),
             )
             .title("Repeat 执行范围")
             .inner_size(1.0, 1.0)
@@ -94,21 +94,20 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn show(app: &AppHandle) -> Result<(), String> {
+pub fn show_recording(app: &AppHandle) -> Result<(), String> {
     show_status(app)?;
-    if let Err(error) = show_borders(app) {
+    if let Err(error) = show_borders(app, "recording") {
         hide(app);
-        return Err(format!("无法显示执行状态提示：{error}"));
+        return Err(format!("无法显示录制状态提示：{error}"));
     }
     Ok(())
 }
 
-/// Recording uses the same bottom status control, but no execution frame.
-pub fn show_recording(app: &AppHandle) -> Result<(), String> {
-    show_status(app)
+pub fn show_execution_borders(app: &AppHandle) -> Result<(), String> {
+    show_borders(app, "execution")
 }
 
-fn show_status(app: &AppHandle) -> Result<(), String> {
+pub fn show_status(app: &AppHandle) -> Result<(), String> {
     let window = app.get_webview_window(LABEL).ok_or("执行状态条不可用")?;
     let main = app.get_webview_window("main").ok_or("主窗口不可用")?;
     let monitor = main
@@ -161,13 +160,13 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-fn show_borders(app: &AppHandle) -> Result<(), String> {
+fn show_borders(app: &AppHandle, mode: &str) -> Result<(), String> {
     let geometry = crate::platform::snapshot_geometry();
     if geometry.monitors.is_empty() {
         return Err("无法读取显示器范围".into());
     }
     if geometry.monitors.iter().enumerate().any(|(index, _)| {
-        app.get_webview_window(&format!("replay-border-{index}"))
+        app.get_webview_window(&format!("replay-border-{mode}-{index}"))
             .is_none()
     }) {
         return Err("显示器数量发生变化，请重启 Repeat".into());
@@ -177,7 +176,7 @@ fn show_borders(app: &AppHandle) -> Result<(), String> {
             return Err("显示器范围无效".into());
         }
         let window = app
-            .get_webview_window(&format!("replay-border-{index}"))
+            .get_webview_window(&format!("replay-border-{mode}-{index}"))
             .ok_or("显示器数量发生变化，请重启 Repeat")?;
         window
             .set_size(PhysicalSize::new(

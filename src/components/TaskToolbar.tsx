@@ -2,15 +2,18 @@ import { formatClock, stopKeyNames, vkName } from "../format";
 import { repeatModeLabel, repeatSummary, type RepeatMode } from "../repeat";
 import type { DocumentView, SessionSnapshot } from "../types";
 import { Icon } from "./Icon";
+import { SPEEDS } from "../speed";
 interface Props {
     snapshot: SessionSnapshot;
     document: DocumentView;
     repeatMode: RepeatMode;
     loopCount: string;
+    executionSpeed: number;
     busy: boolean;
     empty: boolean;
     onRepeatModeChange: (mode: RepeatMode) => void;
     onLoopCountChange: (value: string) => void;
+    onExecutionSpeedChange: (speed: number) => void;
     onStartRecording: () => void;
     onStopRecording: (gesture: string | null) => void;
     onCancelRecording: () => void;
@@ -166,7 +169,7 @@ export function TaskToolbar(p: Props) {
                                 {executing ? (
                                     <span className="button stop" role="status">
                                         <Icon name="pause" />
-                                        使用状态条或 {stopKeyNames(p.snapshot.hotkeys.stopVk)} 停止
+                                        {stopKeyNames(p.snapshot.hotkeys.stopVk)} 停止
                                     </span>
                                 ) : (
                                     <button
@@ -198,13 +201,28 @@ export function TaskToolbar(p: Props) {
                 ) : recording && p.snapshot.recordingLive ? (
                     <span className="record-counter">{formatClock(p.snapshot.recordingLive.elapsedUs)}</span>
                 ) : !p.empty && !recording && !executing ? (
-                    <RunMode
-                        mode={p.repeatMode}
-                        value={p.loopCount}
-                        disabled={mode !== "idle"}
-                        onChangeMode={p.onRepeatModeChange}
-                        onChangeValue={p.onLoopCountChange}
-                    />
+                    <>
+                        <select
+                            className="speed-select"
+                            aria-label="系统执行速度"
+                            value={p.executionSpeed}
+                            disabled={mode !== "idle"}
+                            onChange={event => p.onExecutionSpeedChange(Number(event.currentTarget.value))}
+                        >
+                            {SPEEDS.map(speed => (
+                                <option key={speed} value={speed}>
+                                    {speed}x
+                                </option>
+                            ))}
+                        </select>
+                        <RunMode
+                            mode={p.repeatMode}
+                            value={p.loopCount}
+                            disabled={mode !== "idle"}
+                            onChangeMode={p.onRepeatModeChange}
+                            onChangeValue={p.onLoopCountChange}
+                        />
+                    </>
                 ) : null}
             </div>
         </header>

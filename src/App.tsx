@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import * as api from "./api";
 import { actionAtTime } from "./actions";
 import { ActionsPanel } from "./components/ActionsPanel";
@@ -41,10 +42,12 @@ export default function App() {
     const [workspace, setWorkspace] = useState<WorkspaceView | null>(null),
         [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null),
         [error, setError] = useState<string | null>(null),
+        [notice, setNotice] = useState<string | null>(null),
         [busy, setBusy] = useState(false);
     const [timeUs, setTimeUs] = useState(0),
         [playing, setPlaying] = useState(false),
         [speed, setSpeed] = useState(1),
+        [executionSpeed, setExecutionSpeed] = useState(1),
         [selectedId, setSelectedId] = useState<string | null>(null),
         [loopCount, setLoopCount] = useState("10"),
         [repeatMode, setRepeatMode] = useState<RepeatMode>("once");
@@ -55,6 +58,7 @@ export default function App() {
         [dialog, setDialog] = useState<Dialog>(null),
         [picking, setPicking] = useState(false),
         [pickedPoint, setPickedPoint] = useState<{ x: number; y: number } | null>(null),
+        [dialogNode, setDialogNode] = useState<HTMLDialogElement | null>(null),
         [toast, setToast] = useState("");
     const workspaceRef = useRef<WorkspaceView | null>(null),
         snapshotRef = useRef<SessionSnapshot | null>(null),
@@ -100,7 +104,10 @@ export default function App() {
             const next = await api.fetchWorkspace();
             if (serial === fetchSerial.current) acceptWorkspace(next);
         } catch (e) {
-            if (mounted.current) setError(String(e));
+            if (mounted.current) {
+                if (workspaceRef.current) setNotice(String(e));
+                else setError(String(e));
+            }
         }
     }, [acceptWorkspace]);
     useEffect(() => {
@@ -117,7 +124,7 @@ export default function App() {
                 }
             })
             .catch(e => {
-                if (mounted.current) setError(String(e));
+                if (mounted.current) setNotice(String(e));
                 return () => {};
             });
         void refresh();
@@ -133,7 +140,7 @@ export default function App() {
                 void api
                     .fetchStatus()
                     .then(acceptSnapshot)
-                    .catch(e => setError(String(e))),
+                    .catch(e => setNotice(String(e))),
             250,
         );
         return () => clearInterval(timer);
@@ -143,6 +150,28 @@ export default function App() {
         const timer = setTimeout(() => setToast(""), 2600);
         return () => clearTimeout(timer);
     }, [toast]);
+    const lastError = (snapshot ?? workspace?.session)?.lastError;
+    const formDialog = !!dialog && dialog.type !== "about";
+    useEffect(() => {
+        setDialogNode(globalThis.document.querySelector<HTMLDialogElement>("dialog.dialog[open]"));
+    }, [dialog, picking]);
+    useEffect(() => {
+        if (!workspace || !error || formDialog) return;
+        const timer = window.setTimeout(() => setError(current => (current === error ? null : current)), 5000);
+        return () => window.clearTimeout(timer);
+    }, [!!workspace, error, formDialog]);
+    useEffect(() => {
+        if (!notice) return;
+        const timer = window.setTimeout(() => setNotice(current => (current === notice ? null : current)), 5000);
+        return () => window.clearTimeout(timer);
+    }, [notice]);
+    useEffect(() => {
+        if (!workspace || !lastError) return;
+        const timer = window.setTimeout(() => {
+            if (snapshotRef.current?.lastError === lastError) void api.clearError().catch(() => {});
+        }, 5000);
+        return () => window.clearTimeout(timer);
+    }, [!!workspace, lastError]);
     useEffect(() => {
         const timer = window.setTimeout(() => {
             try {
@@ -208,7 +237,7 @@ export default function App() {
     );
     const openDialog = useCallback((next: Dialog) => {
         setPlaying(false);
-        setError(null);
+        if (next?.type !== "about") setError(null);
         setPicking(false);
         setPickedPoint(null);
         setDialog(next);
@@ -217,8 +246,8 @@ export default function App() {
         setDialog(null);
         setPicking(false);
         setPickedPoint(null);
-        setError(null);
-    }, []);
+        if (formDialog) setError(null);
+    }, [formDialog]);
     const document = workspace?.document;
     const session = snapshot ?? workspace?.session;
     const mode = session?.mode ?? "idle";
@@ -353,12 +382,17 @@ export default function App() {
         const tick = () => {
             const base = execBase.current;
             if (base)
-                setTimeUs(Math.min(document?.durationUs ?? 0, base.elapsedUs + (performance.now() - base.atMs) * 1000));
+                setTimeUs(
+                    Math.min(
+                        document?.durationUs ?? 0,
+                        base.elapsedUs + (performance.now() - base.atMs) * 1000 * executionSpeed,
+                    ),
+                );
             raf = requestAnimationFrame(tick);
         };
         raf = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(raf);
-    }, [mode, document?.durationUs]);
+    }, [mode, document?.durationUs, executionSpeed]);
     const finishPlay = useCallback(() => setPlaying(false), []);
     const togglePlay = useCallback(() => {
         if (playing) {
@@ -399,7 +433,30 @@ export default function App() {
                   referenceImage: null,
               }
             : document;
-    const errorText = error ?? session.lastError;
+    const notices = [!formDialog ? error : null, notice, session.lastError].filter(
+        (message, index, messages): message is string => !!message && messages.indexOf(message) === index,
+    );
+    const errorNotification = notices.length > 0 && (
+        <div className="error-bar" role="alert">
+            <span>
+                {notices.map(message => (
+                    <div key={message}>{message}</div>
+                ))}
+            </span>
+            <button
+                type="button"
+                className="text-button"
+                aria-label="关闭错误提示"
+                onClick={() => {
+                    if (!formDialog) setError(null);
+                    setNotice(null);
+                    if (session.lastError) void api.clearError().catch(e => setNotice(String(e)));
+                }}
+            >
+                ×
+            </button>
+        </div>
+    );
     return (
         <div className="app-shell">
             <TitleBar
@@ -426,32 +483,7 @@ export default function App() {
                 onShortcuts={() => openDialog({ type: "shortcuts" })}
                 onAbout={() => openDialog({ type: "about" })}
             />
-            {errorText && (
-                <div className="error-bar" role="alert">
-                    <span>{errorText}</span>
-                    {session.hasPendingRecording && (
-                        <button
-                            type="button"
-                            className="text-button"
-                            disabled={busy}
-                            onClick={() => void run(() => api.retryRecording())}
-                        >
-                            重试保存录制
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className="text-button"
-                        aria-label="关闭错误提示"
-                        onClick={() => {
-                            setError(null);
-                            void api.clearError().catch(e => setError(String(e)));
-                        }}
-                    >
-                        ×
-                    </button>
-                </div>
-            )}
+            {dialogNode ? createPortal(errorNotification, dialogNode) : errorNotification}
             {session.hasPendingRecording && (
                 <div className="pending-notice">
                     原任务保持不变，新录制尚未保存。
@@ -498,10 +530,12 @@ export default function App() {
                         document={document}
                         repeatMode={repeatMode}
                         loopCount={loopCount}
+                        executionSpeed={executionSpeed}
                         busy={busy}
                         empty={empty}
                         onRepeatModeChange={setRepeatMode}
                         onLoopCountChange={setLoopCount}
+                        onExecutionSpeedChange={setExecutionSpeed}
                         onStartRecording={() => openDialog({ type: "record" })}
                         onStopRecording={gesture => void run(() => api.stopRecording(gesture))}
                         onCancelRecording={() => void run(() => api.cancelRecording(document))}
@@ -512,7 +546,7 @@ export default function App() {
                                 return;
                             }
                             setPlaying(false);
-                            void run(() => api.startExecution(document, rounds));
+                            void run(() => api.startExecution(document, rounds, executionSpeed));
                         }}
                         onReplay={() => {
                             setPlaying(false);
@@ -531,12 +565,6 @@ export default function App() {
                             }
                         }}
                     />
-                    {mode === "recording" && (
-                        <div className="capture-notice">
-                            <span className="record-dot" />
-                            正在录制系统键鼠操作 · 按 {vkName(session.hotkeys.recordVk)} 或点击停止录制
-                        </div>
-                    )}
                     {mode === "preparing" && (
                         <div className="executing-notice" role="status">
                             将在 {Math.max(1, Math.ceil((session.executionLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
@@ -635,6 +663,11 @@ export default function App() {
                             像平常一样操作，按 <kbd className="keycap">{vkName(session.hotkeys.recordVk)}</kbd> 停止。
                         </p>
                         {document.actions.length > 0 && <p className="form-note">本次录制将替换现有录制。</p>}
+                        {error && (
+                            <p className="form-error" role="alert">
+                                {error}
+                            </p>
+                        )}
                     </div>
                     <div className="dialog-actions">
                         <button type="button" className="button" onClick={closeDialog}>

@@ -719,9 +719,7 @@ body.is-resizing-sidebar .app-layout {
 }
 
 /* ── 状态条 ────────────────────────────────────────────── */
-.error-bar,
 .pending-notice,
-.capture-notice,
 .executing-notice,
 .pick-notice {
     flex: none;
@@ -733,9 +731,23 @@ body.is-resizing-sidebar .app-layout {
     font-size: 13px;
 }
 .error-bar {
-    background: #fff2f2;
-    border-bottom: 1px solid #f0d9d9;
-    color: #a13b42;
+    position: fixed;
+    z-index: 130;
+    top: 54px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: min(600px, calc(100vw - 40px));
+    padding: 10px 14px;
+    border: 1px solid #f0d9d9;
+    border-radius: 8px;
+    background: #fffafa;
+    color: #98333b;
+    box-shadow: 0 5px 20px #20272926;
+    font-size: 13px;
+    overflow-wrap: anywhere;
 }
 .error-bar > span {
     flex: 1;
@@ -745,11 +757,6 @@ body.is-resizing-sidebar .app-layout {
     background: var(--wait-bg);
     color: var(--wait-ink);
     border-bottom: 1px solid #e7dcc6;
-}
-.capture-notice {
-    background: #fff7f7;
-    border-bottom: 1px solid #f3e6e6;
-    color: #785558;
 }
 .pick-notice {
     background: var(--accent-soft);

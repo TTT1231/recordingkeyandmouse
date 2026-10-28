@@ -22,7 +22,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Foundation::{CloseHandle, FILETIME, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
         Graphics::Gdi::{
             CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_SUCCESSFUL,
             ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, EnumDisplaySettingsW,
@@ -31,8 +31,8 @@ use windows::{
             LibraryLoader::GetModuleHandleW,
             Shutdown::LockWorkStation,
             Threading::{
-                CREATE_WAITABLE_TIMER_MANUAL_RESET, CreateWaitableTimerExW, SetWaitableTimer,
-                TIMER_ALL_ACCESS,
+                CREATE_WAITABLE_TIMER_MANUAL_RESET, CreateWaitableTimerExW, GetCurrentThread,
+                GetThreadTimes, SetWaitableTimer, TIMER_ALL_ACCESS,
             },
         },
         UI::{Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
@@ -658,6 +658,28 @@ fn semantic(kind: EventKind) -> Option<String> {
 struct FixtureDriver {
     inner: platform::windows::driver::NativeDriver,
     target: usize,
+    slow_injections: Vec<(EventKind, u128, Option<u64>)>,
+    measure_cpu: bool,
+}
+
+fn current_thread_cpu_us() -> Option<u64> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .ok()?
+    };
+    let ticks =
+        |value: FILETIME| (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime);
+    Some((ticks(kernel) + ticks(user)) / 10)
 }
 impl ReplayDriver for FixtureDriver {
     fn now(&mut self) -> Instant {
@@ -675,7 +697,23 @@ impl ReplayDriver for FixtureDriver {
             let thief = String::from_utf16_lossy(&title[..len as usize]);
             return Err(format!("测试接收窗口失焦（前台：{thief}），未发送输入"));
         }
-        self.inner.inject(kind)
+        let cpu_before = self.measure_cpu.then(current_thread_cpu_us).flatten();
+        let started = Instant::now();
+        let result = self.inner.inject(kind);
+        let elapsed = started.elapsed();
+        let cpu_after = self.measure_cpu.then(current_thread_cpu_us).flatten();
+        if elapsed > Duration::from_millis(100) {
+            let cpu_us = cpu_before
+                .zip(cpu_after)
+                .map(|(before, after)| after.saturating_sub(before));
+            eprintln!(
+                "FIXTURE_SLOW_INJECT elapsed_us={} cpu_us={cpu_us:?} kind={kind:?}",
+                elapsed.as_micros(),
+            );
+            self.slow_injections
+                .push((*kind, elapsed.as_micros(), cpu_us));
+        }
+        result
     }
     fn release_held(&mut self) -> Result<Vec<String>, String> {
         self.inner.release_held()
@@ -763,6 +801,9 @@ fn native_stop_control_preserves_interleaved_key_release() {
 #[test]
 #[ignore = "向专用接收窗口发送固定输入，需交互桌面；可选同时验证隔离的 Repeat 测试实例"]
 fn native_capture_edit_save_replay_contract() {
+    // Optional isolation compares playback with the fixture's own capture
+    // hooks removed; it does not stop hooks owned by other processes.
+    let release_test_hooks = std::env::var_os("REPEAT_NATIVE_RELEASE_TEST_HOOKS").is_some();
     let seconds = std::env::var("REPEAT_NATIVE_SECONDS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -787,6 +828,7 @@ fn native_capture_edit_save_replay_contract() {
     let buffer = Arc::new(Mutex::new(RecordingBuffer::new(vec![0x75, 0x76])));
     buffer.lock().unwrap().begin();
     service.start_capture(buffer.clone()).unwrap();
+    let hook_before = platform::windows::input_service::hook_diagnostics();
     let mut items = fixture(receiver.origin);
     if seconds >= 20 {
         items.retain(|(_, kind)| matches!(kind, EventKind::MouseMove { .. }));
@@ -835,6 +877,7 @@ fn native_capture_edit_save_replay_contract() {
         repeat_lib::scheduler::PacerOutcome::Deadline
     );
     service.stop_capture().unwrap();
+    let hook_after = platform::windows::input_service::hook_diagnostics();
     let mut raw = buffer.lock().unwrap().finish();
     assert!(
         raw.events
@@ -856,24 +899,76 @@ fn native_capture_edit_save_replay_contract() {
         toggle_app();
         app_capture.0 = false;
     }
-    assert!(!raw.overflow);
+    if release_test_hooks {
+        service.shutdown();
+    }
     let want: Vec<_> = items.iter().filter_map(|(_, k)| semantic(*k)).collect();
     let got: Vec<_> = raw.events.iter().filter_map(|e| semantic(e.kind)).collect();
+    // Only inspect the fixed, timestamp-marked fixture inputs. Never write
+    // captured key values or unmarked input to diagnostics.
+    let event_type = |kind: EventKind| match kind {
+        EventKind::MouseMove { .. } => "mouseMove",
+        EventKind::MouseDown { .. } => "mouseDown",
+        EventKind::MouseUp { .. } => "mouseUp",
+        EventKind::Wheel { .. } => "wheel",
+        EventKind::KeyDown { .. } => "keyDown",
+        EventKind::KeyUp { .. } => "keyUp",
+        EventKind::Unicode { .. } => "unicode",
+    };
+    let mut marked = BTreeMap::<u32, Vec<&RecordedEvent>>::new();
+    for event in &raw.events {
+        marked.entry(event.native_time_ms).or_default().push(event);
+    }
+    let mut anomalies = Vec::new();
+    for (index, (planned_us, kind)) in items.iter().enumerate() {
+        let marker = 0x5A000001 + index as u32;
+        let observed = marked.get(&marker).map(Vec::as_slice).unwrap_or_default();
+        let matches = observed
+            .iter()
+            .any(|event| match (kind.position(), event.kind.position()) {
+                (Some((x, y)), Some((ex, ey))) => (x - ex).abs() <= 1 && (y - ey).abs() <= 1,
+                _ => semantic(*kind) == semantic(event.kind),
+            });
+        if !matches {
+            anomalies.push(serde_json::json!({
+                "fixtureIndex": index,
+                "marker": marker,
+                "plannedUs": planned_us,
+                "expectedType": event_type(*kind),
+                "expectedPosition": kind.position(),
+                "observed": observed.iter().map(|event| serde_json::json!({
+                    "type": event_type(event.kind),
+                    "position": event.kind.position(),
+                    "timeUs": event.time_us
+                })).collect::<Vec<_>>()
+            }));
+        }
+    }
+    if raw.overflow || got != want || raw.events.len() < 1000 || !anomalies.is_empty() {
+        let evidence = serde_json::json!({
+            "fixture": "fixed native capture sample; timestamp-marked events only",
+            "testHooksReleasedBeforeReplay": release_test_hooks,
+            "expectedCount": items.len(),
+            "capturedMarkedCount": raw.events.len(),
+            "overflow": raw.overflow,
+            "semanticOrderMatches": got == want,
+            "hookCallbacks": hook_after.0.saturating_sub(hook_before.0),
+            "hookWithBuffer": hook_after.1.saturating_sub(hook_before.1),
+            "anomalyCount": anomalies.len(),
+            "anomalies": anomalies.iter().take(50).collect::<Vec<_>>()
+        });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/native-contract-capture-failure-evidence.json");
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        eprintln!("FIXTURE_CAPTURE_FAILURE {evidence}");
+    }
+    assert!(!raw.overflow);
     assert!(got == want, "原生捕获按下、抬起、重复和滚轮的顺序不一致");
     assert!(raw.events.len() >= 1000);
-    for (index, (_, kind)) in items.iter().enumerate() {
-        assert!(
-            raw.events
-                .iter()
-                .any(|e| e.native_time_ms == 0x5A000001 + index as u32
-                    && match (kind.position(), e.kind.position()) {
-                        (Some((x, y)), Some((ex, ey))) =>
-                            (x - ex).abs() <= 1 && (y - ey).abs() <= 1,
-                        _ => semantic(*kind) == semantic(e.kind),
-                    }),
-            "已标记的固定输入没有完整捕获"
-        );
-    }
+    assert!(
+        anomalies.is_empty(),
+        "已标记的固定输入没有完整捕获，见失败证据"
+    );
     assert!(
         raw.events
             .windows(2)
@@ -952,6 +1047,8 @@ fn native_capture_edit_save_replay_contract() {
     let mut driver = FixtureDriver {
         inner: platform::make_driver(&replay_stop, &geometry).unwrap(),
         target: receiver.hwnd,
+        slow_injections: Vec::new(),
+        measure_cpu: std::env::var_os("REPEAT_NATIVE_MEASURE_CPU").is_some(),
     };
     let spec = ScheduleSpec {
         events: Arc::new(reopened.compile()),
@@ -959,6 +1056,26 @@ fn native_capture_edit_save_replay_contract() {
         rounds: 1,
     };
     let outcome = run_replay(&spec, &mut driver, &replay_stop, LATE_THRESHOLD, |_| {});
+    if outcome.failure.is_some() {
+        // This test uses fixed synthetic input only; preserve its failed timing
+        // separately so an unsuccessful run cannot overwrite passing evidence.
+        let evidence = serde_json::json!({
+            "fixture": "fixed native capture/edit/replay sample",
+            "testHooksReleasedBeforeReplay": release_test_hooks,
+            "threadCpuMeasurementEnabled": driver.measure_cpu,
+            "failure": outcome.failure,
+            "timing": outcome.timing,
+            "slowInjections": driver.slow_injections,
+            "firstEvents": spec.events.iter().take(3).collect::<Vec<_>>()
+        });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if release_test_hooks {
+            "target/native-contract-no-test-hooks-failure-evidence.json"
+        } else {
+            "target/native-contract-failure-evidence.json"
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        eprintln!("FIXTURE_FAILURE {evidence}");
+    }
     let replay_received: Vec<_> = receiver
         .messages()
         .into_iter()
@@ -998,9 +1115,13 @@ fn native_capture_edit_save_replay_contract() {
         stats.max_abs_us,
         stats.drift_us
     );
-    let evidence = serde_json::json!({"durationUs":raw.duration_us,"rawEvents":raw.events.len(),"actions":reopened.actions.len(),"sourceMessageCounts":counts(&source_received),"replayMessageCounts":counts(&replay_received),"stats":stats,"timing":outcome.timing});
-    let evidence_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/native-contract-evidence.json");
+    let evidence = serde_json::json!({"testHooksReleasedBeforeReplay":release_test_hooks,"durationUs":raw.duration_us,"rawEvents":raw.events.len(),"actions":reopened.actions.len(),"sourceMessageCounts":counts(&source_received),"replayMessageCounts":counts(&replay_received),"stats":stats,"timing":outcome.timing});
+    let evidence_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if release_test_hooks {
+            "target/native-contract-no-test-hooks-evidence.json"
+        } else {
+            "target/native-contract-evidence.json"
+        });
     std::fs::write(evidence_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     service.shutdown();
     let _ = std::fs::remove_file(db_path);
@@ -1476,6 +1597,8 @@ fn native_keys_edit_preservation() {
     let mut driver = FixtureDriver {
         inner: platform::make_driver(&stop, &geometry).unwrap(),
         target: receiver.hwnd,
+        slow_injections: Vec::new(),
+        measure_cpu: false,
     };
     let outcome = run_replay(
         &ScheduleSpec {
@@ -1519,6 +1642,8 @@ fn native_keys_edit_preservation() {
     let mut driver = FixtureDriver {
         inner: platform::make_driver(&stop, &geometry).unwrap(),
         target: receiver.hwnd,
+        slow_injections: Vec::new(),
+        measure_cpu: false,
     };
     let outcome = run_replay(
         &ScheduleSpec {
@@ -2170,6 +2295,15 @@ fn native_tauri_overlay_injected_click_receiver() {
         platform::current_layout_klid(),
     );
     let physical_stop = std::env::var_os("REPEAT_E2E_PHYSICAL_STOP").is_some();
+    let observe_seconds = std::env::var("REPEAT_E2E_OBSERVE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| (8..=30).contains(seconds))
+        .unwrap_or(0);
+    assert!(
+        !(physical_stop && observe_seconds > 0),
+        "请分别运行真人停止和动效观察"
+    );
     let sample: Vec<(EventKind, i64)> = if physical_stop {
         vec![(key(0xA2, true), 100_000), (key(0xA2, false), 60_000_000)]
     } else {
@@ -2180,7 +2314,7 @@ fn native_tauri_overlay_injected_click_receiver() {
                     x,
                     y,
                 },
-                100_000,
+                1_500_000,
             ),
             (
                 EventKind::MouseUp {
@@ -2188,10 +2322,10 @@ fn native_tauri_overlay_injected_click_receiver() {
                     x,
                     y,
                 },
-                160_000,
+                1_560_000,
             ),
-            (key(0x75, true), 800_000),
-            (key(0x75, false), 860_000),
+            (key(0x75, true), 2_200_000),
+            (key(0x75, false), 2_260_000),
         ]
     };
     let events = sample
@@ -2207,7 +2341,13 @@ fn native_tauri_overlay_injected_click_receiver() {
     doc.replace_recording(RawRecording {
         gestures: Default::default(),
         started_at_wall_ms: 0,
-        duration_us: if physical_stop { 60_200_000 } else { 1_200_000 },
+        duration_us: if physical_stop {
+            60_200_000
+        } else if observe_seconds > 0 {
+            (observe_seconds * 1_000_000) as i64
+        } else {
+            2_600_000
+        },
         events,
         geometry,
         layout_klid: platform::current_layout_klid(),
@@ -2293,41 +2433,31 @@ fn native_tauri_overlay_injected_click_receiver() {
     unsafe {
         GetWindowRect(overlay_hwnd, &mut overlay_rect).unwrap();
     }
-    // The full-screen execution frame must actually paint, remain non-activating,
-    // and let pointer hit testing reach underlying windows. A visible HWND alone
-    // is insufficient to verify this visual contract.
-    thread::sleep(Duration::from_millis(800));
-    let mut previous = None;
-    let frame_hwnd = loop {
-        let found = unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行范围")) }
-            .expect("未找到隔离实例的执行边框窗口");
-        let mut frame_pid = 0;
-        unsafe { GetWindowThreadProcessId(found, Some(&mut frame_pid)) };
-        if frame_pid == child.process.id() {
-            break found;
+    // Both the recording and execution frames have the same native title.
+    // Find a visible frame belonging to this particular isolated process.
+    let visible_frame = || {
+        let mut previous = None;
+        while let Ok(found) =
+            unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行范围")) }
+        {
+            let mut frame_pid = 0;
+            unsafe { GetWindowThreadProcessId(found, Some(&mut frame_pid)) };
+            if frame_pid == child.process.id() && unsafe { IsWindowVisible(found) }.as_bool() {
+                return Some(found);
+            }
+            previous = Some(found);
         }
-        previous = Some(found);
+        None
     };
-    assert!(unsafe { IsWindowVisible(frame_hwnd) }.as_bool());
-    assert_ne!(
-        unsafe { GetForegroundWindow() },
-        frame_hwnd,
-        "边框不能抢占焦点"
-    );
-    let dc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
-    assert!(!dc.is_invalid());
-    let screen_x = info.rcMonitor.left + work_width / 2;
-    let blue = (0..12).any(|dy| {
-        let value = unsafe {
-            windows::Win32::Graphics::Gdi::GetPixel(dc, screen_x, info.rcMonitor.top + dy)
-        }
-        .0;
-        value == 0x00ff_8839
-    });
-    unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, dc) };
-    assert!(blue, "屏幕顶部未绘制期望的蓝色边框");
+    // The status bar appears at the start of the three-second countdown. No
+    // execution frame may appear while the countdown is still in progress.
+    let preparation_observed = Instant::now();
+    while preparation_observed.elapsed() < Duration::from_millis(800) {
+        assert!(visible_frame().is_none(), "准备倒计时不应显示执行边框");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let preparation_without_frame_ms = preparation_observed.elapsed().as_millis();
     if (overlay_rect.left - overlay_left).abs() > 1 || (overlay_rect.top - overlay_top).abs() > 1 {
-        let _ = child.process.kill();
         panic!(
             "隔离实例显示器或 DPI 与固定脚本不一致，未执行验收: expected=({overlay_left},{overlay_top}), actual=({},{})",
             overlay_rect.left, overlay_rect.top
@@ -2347,6 +2477,64 @@ fn native_tauri_overlay_injected_click_receiver() {
         let _ = SendMessageW(HWND(receiver.hwnd as *mut _), WM_APP + 12, None, None);
     }
     receiver.clear();
+    let wait_for_frame = Instant::now();
+    let frame_hwnd = loop {
+        if let Some(frame) = visible_frame() {
+            break frame;
+        }
+        assert!(
+            wait_for_frame.elapsed() < Duration::from_secs(5),
+            "执行开始后未显示边框"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    // The full-screen frame must paint and remain non-activating. A visible
+    // window alone is insufficient to verify this visual contract.
+    assert_ne!(
+        unsafe { GetForegroundWindow() },
+        frame_hwnd,
+        "边框不能抢占焦点"
+    );
+    let dc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
+    assert!(!dc.is_invalid());
+    let screen_x = info.rcMonitor.left + work_width / 2;
+    let wait_for_paint = Instant::now();
+    let blue = loop {
+        let painted = (0..12).any(|dy| {
+            let value = unsafe {
+                windows::Win32::Graphics::Gdi::GetPixel(dc, screen_x, info.rcMonitor.top + dy)
+            }
+            .0;
+            value == 0x00ff_8839
+        });
+        if painted || wait_for_paint.elapsed() >= Duration::from_millis(800) {
+            break painted;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, dc) };
+    assert!(blue, "屏幕顶部未绘制期望的蓝色边框");
+    // Re-establish the receiver after execution starts: starting the task in
+    // Repeat (or switching windows during the countdown) can take focus back.
+    unsafe {
+        SetWindowPos(
+            HWND(receiver.hwnd as *mut _),
+            Some(HWND_TOP),
+            x - 250,
+            y - 250,
+            500,
+            400,
+            SWP_NOACTIVATE,
+        )
+        .unwrap();
+        let _ = SendMessageW(HWND(receiver.hwnd as *mut _), WM_APP + 12, None, None);
+    }
+    let receiver_focused = unsafe { GetForegroundWindow().0 as usize } == receiver.hwnd;
+    let hit_window =
+        unsafe { windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(POINT { x, y }) };
+    let receiver_hit = hit_window.0 as usize == receiver.hwnd;
+    assert!(receiver_focused, "执行开始后测试接收窗口未获得焦点");
+    assert!(receiver_hit, "测试点被其他窗口遮挡: {hit_window:?}");
     if physical_stop {
         thread::sleep(Duration::from_millis(3400));
         let held_before = unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0;
@@ -2398,7 +2586,11 @@ fn native_tauri_overlay_injected_click_receiver() {
         println!("TAURI_PHYSICAL_STOP_EVIDENCE {evidence}");
         return;
     }
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(if observe_seconds > 0 {
+        observe_seconds + 1
+    } else {
+        5
+    }));
     let messages = receiver.messages();
     let relevant: Vec<_> = messages
         .iter()
@@ -2413,7 +2605,7 @@ fn native_tauri_overlay_injected_click_receiver() {
             _ => "WM_KEYUP",
         })
         .collect();
-    let evidence = serde_json::json!({"fixture":"real Tauri replay-overlay and isolated fixed task", "dataDir":data_dir, "overlayRect":{"left":overlay_rect.left,"top":overlay_rect.top,"right":overlay_rect.right,"bottom":overlay_rect.bottom}, "injectedAt":{"x":x,"y":y}, "receiverEvents":relevant.iter().map(|m| serde_json::json!({"message":match m.msg { WM_LBUTTONDOWN => "WM_LBUTTONDOWN", WM_LBUTTONUP => "WM_LBUTTONUP", WM_KEYDOWN => "WM_KEYDOWN", _ => "WM_KEYUP" }, "value":m.value,"clientX":m.x,"clientY":m.y})).collect::<Vec<_>>()});
+    let evidence = serde_json::json!({"fixture":"real Tauri replay-overlay and isolated fixed task", "dataDir":data_dir, "preparationWithoutFrameMs":preparation_without_frame_ms, "executionFrameBlue":blue, "receiverFocused":receiver_focused, "receiverAtClickPoint":receiver_hit, "overlayRect":{"left":overlay_rect.left,"top":overlay_rect.top,"right":overlay_rect.right,"bottom":overlay_rect.bottom}, "injectedAt":{"x":x,"y":y}, "receiverEvents":relevant.iter().map(|m| serde_json::json!({"message":match m.msg { WM_LBUTTONDOWN => "WM_LBUTTONDOWN", WM_LBUTTONUP => "WM_LBUTTONUP", WM_KEYDOWN => "WM_KEYDOWN", _ => "WM_KEYUP" }, "value":m.value,"clientX":m.x,"clientY":m.y})).collect::<Vec<_>>()});
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/tauri-overlay-injection-evidence.json");
     std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();

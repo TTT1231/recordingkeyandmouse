@@ -7,7 +7,7 @@ use crate::event::{EventKind, MouseButton};
 use crate::platform::{self, HotkeyAction};
 use crate::scheduler::{
     ExecutionFailure, ExecutionOutcome, LATE_THRESHOLD, PacerOutcome, ProgressEvent, ReplayDriver,
-    ScheduleSpec, StopSignal, TimingStats, compute_stats, run_replay,
+    ScheduleSpec, StopSignal, TimingStats, compute_stats, run_replay, scale_execution_time,
 };
 use crate::storage::{Hotkeys, Store};
 use serde::Serialize;
@@ -42,6 +42,7 @@ struct ExecutionProgress {
 struct ExecutionLive {
     stop: Arc<StopSignal>,
     rounds: u32,
+    speed: f64,
     progress: Arc<ExecutionProgress>,
     prepare_until: Instant,
 }
@@ -120,6 +121,7 @@ pub struct ExecutionLiveView {
     pub stop_requested: bool,
     pub prepare_remaining_ms: u64,
     pub elapsed_us: i64,
+    pub speed: f64,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -430,6 +432,12 @@ impl AppSession {
             self.emit_state(app);
             return Ok(());
         }
+        if live.collected.try_reserve(finished.events.len()).is_err() {
+            st.last_error = Some("内存不足，录制未能保存，原任务仍保留".into());
+            drop(st);
+            self.emit_state(app);
+            return Ok(());
+        }
         live.collected.extend(finished.events);
         let duration = crate::capture::trim_control_gesture(
             &mut live.collected,
@@ -672,9 +680,14 @@ impl AppSession {
         id: &str,
         revision: u64,
         rounds: u32,
+        speed: f64,
     ) -> Result<(), String> {
         if !(1..=100_000).contains(&rounds) && rounds != INFINITE_ROUNDS {
             return Err("执行次数应为 1–100000 的整数，或无限循环".into());
+        }
+        let quarters = speed * 4.0;
+        if !quarters.is_finite() || !(1.0..=8.0).contains(&quarters) || quarters.fract() != 0.0 {
+            return Err("执行速度应为 0.25x 至 2x，每次调整 0.25x".into());
         }
         let previous = self.executor.lock().unwrap().take();
         if let Some(handle) = previous {
@@ -693,14 +706,18 @@ impl AppSession {
                 return Err("演示只支持预览，不能执行到系统".into());
             }
             self.input_service()?.ensure_stop_available()?;
-            let events = st.current.compile_for_execution()?;
+            let mut events = st.current.compile_for_execution()?;
+            let scale_time = |time: i64| scale_execution_time(time, quarters as u8);
+            for event in &mut events {
+                event.time_us = scale_time(event.time_us)?;
+            }
             let geometry = platform::snapshot_geometry();
             if !geometry.same_layout(&st.current.geometry) {
                 return Err("显示器布局与录制时不一致，请恢复原布局后执行".into());
             }
             let spec = ScheduleSpec {
                 events: Arc::new(events),
-                duration_us: st.current.duration_us,
+                duration_us: scale_time(st.current.duration_us)?,
                 rounds,
             };
             let stop = StopSignal::new();
@@ -710,7 +727,7 @@ impl AppSession {
                 *self.execution_stop.lock().unwrap() = None;
                 return Err(error);
             }
-            if let Err(error) = crate::overlay::show(app) {
+            if let Err(error) = crate::overlay::show_status(app) {
                 let _ = self.input_service()?.arm_execution(false);
                 *self.execution_stop.lock().unwrap() = None;
                 return Err(error);
@@ -721,6 +738,7 @@ impl AppSession {
                 stop: stop.clone(),
                 progress: progress.clone(),
                 rounds,
+                speed,
                 prepare_until,
             });
             st.last_error = None;
@@ -742,6 +760,10 @@ impl AppSession {
                     }
                     PacerOutcome::Deadline => {
                         if let Err(reason) = platform::execution_ready() {
+                            empty_outcome(rounds, false, Some(reason))
+                        } else if let Err(reason) =
+                            crate::overlay::show_execution_borders(&app_worker)
+                        {
                             empty_outcome(rounds, false, Some(reason))
                         } else {
                             progress.phase.store(1, Ordering::SeqCst);
@@ -854,6 +876,7 @@ impl AppSession {
                 None,
                 Some(ExecutionLiveView {
                     rounds_requested: live.rounds,
+                    speed: live.speed,
                     current_round: live.progress.round.load(Ordering::SeqCst),
                     events_injected: live.progress.injected.load(Ordering::SeqCst),
                     last_seq: live.progress.last_seq.load(Ordering::SeqCst),
@@ -864,9 +887,8 @@ impl AppSession {
                         .lock()
                         .unwrap()
                         .map(|t| {
-                            t.elapsed()
-                                .as_micros()
-                                .min(st.current.duration_us.max(0) as u128)
+                            ((t.elapsed().as_micros() as f64 * live.speed)
+                                .min(st.current.duration_us.max(0) as f64))
                                 as i64
                         })
                         .unwrap_or(0),

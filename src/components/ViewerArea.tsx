@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { desktopBounds } from "../actions";
 import { formatClock, vkName } from "../format";
 import { createCursor, seek } from "../preview";
+import { SPEEDS } from "../speed";
 import type { ActionView, DocumentView } from "../types";
 import { Icon } from "./Icon";
 interface Props {
@@ -434,9 +435,11 @@ export function ViewerArea(p: Props) {
                         disabled={p.disabled}
                         onChange={e => p.onSpeedChange(Number(e.currentTarget.value))}
                     >
-                        <option value={0.5}>0.5 倍</option>
-                        <option value={1}>原速</option>
-                        <option value={2}>2 倍</option>
+                        {SPEEDS.map(speed => (
+                            <option key={speed} value={speed}>
+                                {speed}x
+                            </option>
+                        ))}
                     </select>
                     {p.timelineOpen && (
                         <button

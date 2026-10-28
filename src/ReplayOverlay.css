@@ -21,7 +21,10 @@ html.replay-overlay-window #root {
     background: rgba(15, 23, 42, 0.94);
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 26px;
-    font: 13px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font:
+        13px/1 "Microsoft YaHei UI",
+        "Segoe UI",
+        sans-serif;
     white-space: nowrap;
     user-select: none;
 }
@@ -40,14 +43,61 @@ html.replay-overlay-window #root {
     box-shadow: 0 0 9px rgba(248, 113, 113, 0.65);
 }
 
-.replay-overlay-recording .replay-overlay-label { color: #fca5a5; }
+.replay-overlay-recording .replay-overlay-label {
+    color: #fca5a5;
+}
 
-.replay-overlay-details { display: grid; flex: 1; min-width: 0; gap: 5px; }
-.replay-overlay-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
-.replay-overlay-label { color: #a9d2ff; font-weight: 600; }
-.replay-overlay-round { overflow: hidden; color: #dce8f6; text-overflow: ellipsis; }
-.replay-overlay-secondary { color: #aebccc; font-size: 11px; }
-.replay-overlay-time { font-variant-numeric: tabular-nums; }
+.replay-overlay-details {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    gap: 5px;
+}
+.replay-overlay-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+.replay-overlay-label {
+    color: #a9d2ff;
+    font-weight: 600;
+}
+.replay-overlay-active {
+    background: linear-gradient(100deg, #a9d2ff 30%, #fff 48%, #a9d2ff 62%);
+    background-size: 220% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: overlay-sweep 2.8s linear infinite;
+}
+@keyframes overlay-sweep {
+    from {
+        background-position: 100% 0;
+    }
+    to {
+        background-position: -100% 0;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .replay-overlay-active {
+        animation: none;
+        -webkit-text-fill-color: #a9d2ff;
+    }
+}
+.replay-overlay-round {
+    overflow: hidden;
+    color: #dce8f6;
+    text-overflow: ellipsis;
+}
+.replay-overlay-secondary {
+    color: #aebccc;
+    font-size: 11px;
+}
+.replay-overlay-time {
+    font-variant-numeric: tabular-nums;
+}
 
 .replay-overlay-stop {
     position: absolute;
@@ -61,4 +111,9 @@ html.replay-overlay-window #root {
     border-radius: 50%;
 }
 
-.replay-overlay-stop span { width: 10px; height: 10px; background: #fff; border-radius: 2px; }
+.replay-overlay-stop span {
+    width: 10px;
+    height: 10px;
+    background: #fff;
+    border-radius: 2px;
+}

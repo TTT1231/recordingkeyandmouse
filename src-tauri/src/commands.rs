@@ -137,8 +137,9 @@ pub fn start_execution(
     task_id: String,
     revision: u64,
     loop_count: u32,
+    speed: f64,
 ) -> Result<SessionSnapshot, String> {
-    session.start_execution(&app, &task_id, revision, loop_count)?;
+    session.start_execution(&app, &task_id, revision, loop_count, speed)?;
     Ok(session.snapshot())
 }
 #[tauri::command]

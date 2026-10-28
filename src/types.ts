@@ -93,6 +93,7 @@ export interface SessionSnapshot {
         stopRequested: boolean;
         prepareRemainingMs: number;
         elapsedUs: number;
+        speed: number;
     } | null;
     hasExecutionReport: boolean;
     lastError: string | null;

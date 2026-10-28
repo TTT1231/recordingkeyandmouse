@@ -111,6 +111,15 @@ pub struct ScheduleSpec {
     pub rounds: u32,
 }
 
+/// 将录制时间映射到执行时间；原录制不受影响，顺序及结尾停顿均保留。
+pub fn scale_execution_time(time_us: i64, speed_quarters: u8) -> Result<i64, String> {
+    if time_us < 0 || !(1..=8).contains(&speed_quarters) {
+        return Err("执行时间或速度无效".into());
+    }
+    i64::try_from(i128::from(time_us) * 4 / i128::from(speed_quarters))
+        .map_err(|_| "执行速度导致录制时长超出范围".into())
+}
+
 /// 执行前数据校验：时间非负、非递减、序号严格递增。数据损坏必须拒绝执行而不是猜。
 pub fn validate_recording(
     events: &[crate::event::RecordedEvent],
@@ -574,6 +583,48 @@ mod tests {
             duration_us,
             rounds,
         }
+    }
+
+    #[test]
+    fn speed_scales_events_and_each_rounds_trailing_pause() {
+        for (quarters, expected_event, expected_duration) in [
+            (1, 4_000_000, 6_000_000),
+            (2, 2_000_000, 3_000_000),
+            (3, 1_333_333, 2_000_000),
+            (4, 1_000_000, 1_500_000),
+            (5, 800_000, 1_200_000),
+            (6, 666_666, 1_000_000),
+            (7, 571_428, 857_142),
+            (8, 500_000, 750_000),
+        ] {
+            let event_time = scale_execution_time(1_000_000, quarters).unwrap();
+            let duration = scale_execution_time(1_500_000, quarters).unwrap();
+            assert_eq!(event_time, expected_event);
+            assert_eq!(duration, expected_duration);
+            let spec = spec_of(
+                vec![ev(1, event_time, EventKind::MouseMove { x: 1, y: 1 })],
+                duration,
+                2,
+            );
+            let stop = StopSignal::new();
+            let mut driver = MockDriver::new(stop.clone());
+            let start = driver.now;
+            let outcome = run_replay(&spec, &mut driver, &stop, LATE_THRESHOLD, |_| {});
+            assert_eq!(outcome.rounds_completed, 2);
+            assert_eq!(
+                outcome
+                    .timing
+                    .iter()
+                    .map(|t| t.planned_us)
+                    .collect::<Vec<_>>(),
+                vec![event_time, event_time]
+            );
+            assert_eq!(
+                driver.now.duration_since(start).as_micros(),
+                (duration as u128) * 2
+            );
+        }
+        assert!(scale_execution_time(i64::MAX, 1).is_err());
     }
 
     #[test]

@@ -34,6 +34,7 @@ export function ReplayOverlay() {
     const live = snapshot?.executionLive;
     const recording = snapshot?.mode === "recording";
     const preparing = snapshot?.mode === "preparing";
+    const executing = snapshot?.mode === "executing";
     const stopping = live?.stopRequested ?? false;
     const round =
         live?.roundsRequested === INFINITE_ROUNDS
@@ -48,10 +49,18 @@ export function ReplayOverlay() {
             <span className="replay-overlay-dot" aria-hidden="true" />
             <span className="replay-overlay-details">
                 <span className="replay-overlay-line">
-                    <span className="replay-overlay-label">
-                        {recording ? "录制中" : stopping ? "正在停止" : preparing ? "准备执行" : "执行中"}
+                    <span className={`replay-overlay-label${executing && !stopping ? " replay-overlay-active" : ""}`}>
+                        {recording
+                            ? "录制中"
+                            : stopping
+                              ? "正在停止"
+                              : preparing
+                                ? "准备执行"
+                                : executing
+                                  ? "执行中"
+                                  : "准备中"}
                     </span>
-                    {!recording && (
+                    {(preparing || executing) && (
                         <span className="replay-overlay-round">
                             {preparing
                                 ? `${Math.max(1, Math.ceil((live?.prepareRemainingMs ?? 0) / 1000))} 秒后开始`
@@ -64,7 +73,7 @@ export function ReplayOverlay() {
                         {recording
                             ? vkName(snapshot?.hotkeys.recordVk ?? 0x77)
                             : stopKeyNames(snapshot?.hotkeys.stopVk ?? 0x78)}{" "}
-                        停止
+                        停止{!recording && live?.speed && live.speed !== 1 ? ` · ${live.speed}x` : ""}
                     </span>
                     <span className="replay-overlay-time">
                         {formatTimelineTick(

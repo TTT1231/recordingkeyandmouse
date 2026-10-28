@@ -217,6 +217,41 @@ impl Hotkeys {
     }
 }
 
+fn mouse_stop_pair(events: &[RecordedEvent], duration: i64) -> Option<(u64, Option<u64>, i64)> {
+    events
+        .iter()
+        .rev()
+        .find(|e| {
+            matches!(
+                e.kind,
+                EventKind::MouseUp {
+                    button: crate::event::MouseButton::Left,
+                    ..
+                }
+            ) && duration.saturating_sub(e.time_us) < 1_000_000
+        })
+        .and_then(|up| {
+            events
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.seq < up.seq
+                        && matches!(
+                            e.kind,
+                            EventKind::MouseDown {
+                                button: crate::event::MouseButton::Left,
+                                ..
+                            } | EventKind::MouseUp {
+                                button: crate::event::MouseButton::Left,
+                                ..
+                            }
+                        )
+                })
+                .filter(|e| matches!(e.kind, EventKind::MouseDown { .. }))
+                .map(|down| (down.seq, Some(up.seq), down.time_us))
+        })
+}
+
 /// 按钮触发的停止不属于录制内容，只移除其配对事件，不能截断并发的其他输入。
 pub fn trim_control_gesture(
     events: &mut Vec<RecordedEvent>,
@@ -224,38 +259,7 @@ pub fn trim_control_gesture(
     gesture: Option<&str>,
 ) -> i64 {
     let gesture = match gesture {
-        Some("mouse") => events
-            .iter()
-            .rev()
-            .find(|e| {
-                matches!(
-                    e.kind,
-                    EventKind::MouseUp {
-                        button: crate::event::MouseButton::Left,
-                        ..
-                    }
-                ) && duration.saturating_sub(e.time_us) < 1_000_000
-            })
-            .and_then(|up| {
-                events
-                    .iter()
-                    .rev()
-                    .find(|e| {
-                        e.seq < up.seq
-                            && matches!(
-                                e.kind,
-                                EventKind::MouseDown {
-                                    button: crate::event::MouseButton::Left,
-                                    ..
-                                } | EventKind::MouseUp {
-                                    button: crate::event::MouseButton::Left,
-                                    ..
-                                }
-                            )
-                    })
-                    .filter(|e| matches!(e.kind, EventKind::MouseDown { .. }))
-                    .map(|down| (down.seq, Some(up.seq), down.time_us))
-            }),
+        Some("mouse") => mouse_stop_pair(events, duration),
         Some("enter") | Some("space") => {
             let vk = if gesture == Some("enter") { 13 } else { 32 };
             events
@@ -302,6 +306,61 @@ mod tests {
                 scan: 0,
                 extended: false,
             }
+        }
+    }
+
+    fn event(seq: u64, time_us: i64, kind: EventKind) -> RecordedEvent {
+        RecordedEvent {
+            seq,
+            time_us,
+            native_time_ms: 0,
+            kind,
+        }
+    }
+
+    #[test]
+    fn consecutive_mouse_moves_are_preserved_before_mouse_or_hotkey_stop() {
+        let moves = vec![
+            event(1, 10, EventKind::MouseMove { x: 0, y: 0 }),
+            event(2, 20, EventKind::MouseMove { x: 100, y: 100 }),
+            event(3, 30, EventKind::MouseMove { x: 200, y: 200 }),
+        ];
+        let mut mouse_stopped = moves.clone();
+        mouse_stopped.extend([
+            event(
+                4,
+                40,
+                EventKind::MouseDown {
+                    button: MouseButton::Left,
+                    x: 200,
+                    y: 200,
+                },
+            ),
+            event(
+                5,
+                50,
+                EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x: 200,
+                    y: 200,
+                },
+            ),
+        ]);
+        assert_eq!(
+            trim_control_gesture(&mut mouse_stopped, 60, Some("mouse")),
+            40
+        );
+        assert_eq!(mouse_stopped, moves);
+        let mut hotkey_stopped = moves.clone();
+        assert_eq!(trim_control_gesture(&mut hotkey_stopped, 60, None), 60);
+        assert_eq!(hotkey_stopped, moves);
+        for stopped in [mouse_stopped, hotkey_stopped] {
+            let mut compiled: Vec<_> = crate::document::group_events(&stopped)
+                .into_iter()
+                .flat_map(|action| action.events)
+                .collect();
+            compiled.sort_by_key(|event| (event.time_us, event.seq));
+            assert_eq!(compiled, moves, "连续移动须原样进入回放动作");
         }
     }
 
