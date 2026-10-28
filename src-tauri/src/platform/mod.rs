@@ -6,9 +6,33 @@ use std::sync::{Arc, Mutex};
 
 use crate::capture::RecordingBuffer;
 
+/// Physical screen rectangle of the mouse-transparent replay stop control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl StopRegion {
+    pub fn contains(self, x: i32, y: i32) -> bool {
+        let dx = i64::from(x) - i64::from(self.x);
+        let dy = i64::from(y) - i64::from(self.y);
+        dx >= 0 && dy >= 0 && dx < i64::from(self.width) && dy < i64::from(self.height)
+    }
+}
+
+static OVERLAY_STOP_REGION: Mutex<Option<StopRegion>> = Mutex::new(None);
+
+pub fn set_overlay_stop_region(region: Option<StopRegion>) {
+    *OVERLAY_STOP_REGION.lock().unwrap() = region;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyAction {
     ToggleRecording,
+    StopRecording(u64),
     StopExecution,
     EnvironmentChanged,
 }
@@ -18,7 +42,7 @@ pub enum ServiceCommand {
     StartCapture(Arc<Mutex<RecordingBuffer>>),
     StartCaptureChecked(
         Arc<Mutex<RecordingBuffer>>,
-        std::sync::mpsc::Sender<Result<(), String>>,
+        std::sync::mpsc::Sender<Result<u64, String>>,
     ),
     StopCapture,
     StopCaptureChecked(std::sync::mpsc::Sender<Result<(), String>>),

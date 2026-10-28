@@ -321,18 +321,41 @@ impl TaskDocument {
         }
     }
     pub fn validate_execution(&self) -> Result<(), String> {
-        let events = self.compile();
+        self.compile_for_execution().map(|_| ())
+    }
+
+    /// 在副本上准备并校验调度事件；原始录制、动作和预览坐标不变。
+    pub fn compile_for_execution(&self) -> Result<Vec<RecordedEvent>, String> {
+        let mut events = self.compile();
         if events.is_empty() {
             return Err("任务还没有可以执行的输入".into());
         }
         crate::scheduler::validate_recording(&events, self.duration_us)?;
         validate_balanced(&events)?;
-        for event in &events {
+        let mut held_buttons = BTreeSet::new();
+        for event in &mut events {
+            if let EventKind::MouseMove { x, y } = &mut event.kind
+                && held_buttons.is_empty()
+                && self.check_point(*x, *y).is_err()
+                && let Some((edge_x, edge_y)) = self.geometry.project_exterior_move(*x, *y)
+            {
+                *x = edge_x;
+                *y = edge_y;
+            }
             if let Some((x, y)) = event.kind.position() {
                 self.check_point(x, y)?;
             }
+            match event.kind {
+                EventKind::MouseDown { button, .. } => {
+                    held_buttons.insert(button);
+                }
+                EventKind::MouseUp { button, .. } => {
+                    held_buttons.remove(&button);
+                }
+                _ => {}
+            }
         }
-        Ok(())
+        Ok(events)
     }
     pub fn check_point(&self, x: i32, y: i32) -> Result<(), String> {
         if self.geometry.monitors.iter().any(|m| {
@@ -922,7 +945,7 @@ pub fn validate_balanced(events: &[RecordedEvent]) -> Result<(), String> {
     if held_state(events, true)?.is_empty() {
         Ok(())
     } else {
-        Err("录制结束时仍有按住的键或鼠标，不能直接循环执行；请全部抬起后重新录制".into())
+        Err("录制中有未配对的按下事件，缺少对应的抬起，无法执行；请检查相关动作或重新录制".into())
     }
 }
 pub fn parse_chord(chord: &str) -> Result<Vec<u32>, String> {

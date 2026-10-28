@@ -35,6 +35,50 @@ pub struct VirtualScreen {
 }
 
 impl DesktopGeometry {
+    /// 仅供执行副本使用：钩子可能在桌面外围报告最多 3 个物理像素的移动。
+    /// 投影只允许虚拟桌面外围且落点属于唯一显示器，绝不跨显示器间隙猜测。
+    pub(crate) fn project_exterior_move(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        let mut bounds = self.monitors.iter().filter(|m| m.width > 0 && m.height > 0);
+        let first = bounds.next()?;
+        let (mut left, mut top) = (i64::from(first.x), i64::from(first.y));
+        let (mut right, mut bottom) = (
+            left + i64::from(first.width) - 1,
+            top + i64::from(first.height) - 1,
+        );
+        for monitor in bounds {
+            let mx = i64::from(monitor.x);
+            let my = i64::from(monitor.y);
+            left = left.min(mx);
+            top = top.min(my);
+            right = right.max(mx + i64::from(monitor.width) - 1);
+            bottom = bottom.max(my + i64::from(monitor.height) - 1);
+        }
+        let (x, y) = (i64::from(x), i64::from(y));
+        let (projected_x, projected_y) = (x.clamp(left, right), y.clamp(top, bottom));
+        if (x == projected_x && y == projected_y)
+            || (x - projected_x).abs() > 3
+            || (y - projected_y).abs() > 3
+        {
+            return None;
+        }
+        let mut matches = self.monitors.iter().filter(|m| {
+            m.width > 0
+                && m.height > 0
+                && projected_x >= i64::from(m.x)
+                && projected_y >= i64::from(m.y)
+                && projected_x < i64::from(m.x) + i64::from(m.width)
+                && projected_y < i64::from(m.y) + i64::from(m.height)
+        });
+        matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some((
+            i32::try_from(projected_x).ok()?,
+            i32::try_from(projected_y).ok()?,
+        ))
+    }
+
     pub fn virtual_screen(&self) -> Option<VirtualScreen> {
         let first = self.monitors.first()?;
         let mut x = first.x;
@@ -104,6 +148,58 @@ mod tests {
                 dpi: 96,
             }],
         }
+    }
+
+    #[test]
+    fn exterior_move_projection_is_small_unambiguous_and_overflow_safe() {
+        let g = single_screen();
+        for (point, expected) in [
+            ((-3, 20), Some((0, 20))),
+            ((1922, 20), Some((1919, 20))),
+            ((20, -3), Some((20, 0))),
+            ((20, 1082), Some((20, 1079))),
+            ((-3, -3), Some((0, 0))),
+            ((-4, 20), None),
+            ((20, 20), None),
+        ] {
+            assert_eq!(g.project_exterior_move(point.0, point.1), expected);
+        }
+        let mut gap = g.clone();
+        gap.monitors.push(MonitorInfo {
+            name: "other".into(),
+            x: 1922,
+            y: 0,
+            width: 500,
+            height: 1080,
+            dpi: 96,
+        });
+        assert_eq!(
+            gap.project_exterior_move(1920, 20),
+            None,
+            "显示器间隙不能投影"
+        );
+        let mut overlap = g.clone();
+        overlap.monitors.push(overlap.monitors[0].clone());
+        assert_eq!(
+            overlap.project_exterior_move(-1, 20),
+            None,
+            "有多个显示器落点时不能猜测"
+        );
+        let extreme = DesktopGeometry {
+            monitors: vec![MonitorInfo {
+                name: "edge".into(),
+                x: i32::MAX - 1,
+                y: -10,
+                width: 5,
+                height: 20,
+                dpi: 96,
+            }],
+        };
+        assert_eq!(
+            extreme.project_exterior_move(i32::MAX - 2, 0),
+            Some((i32::MAX - 1, 0))
+        );
+        assert_eq!(extreme.project_exterior_move(i32::MIN, 0), None);
     }
 
     #[test]

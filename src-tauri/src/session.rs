@@ -23,6 +23,7 @@ use tauri::{AppHandle, Emitter};
 pub const INFINITE_ROUNDS: u32 = u32::MAX;
 
 struct RecordingLive {
+    capture_id: u64,
     gestures: crate::document::GestureSettings,
     buffer: Arc<Mutex<RecordingBuffer>>,
     collected: Vec<crate::event::RecordedEvent>,
@@ -249,6 +250,7 @@ impl AppSession {
                                     let _ = session.input_service().and_then(|s|s.stop_capture());
                                     st.mode = Mode::Idle;
                                     st.last_error = Some("桌面会话、显示布局或电源状态发生变化，本次录制未替换原任务".into());
+                                    crate::overlay::hide(&app);
                                 }
                                 if let Mode::Executing(live)=&st.mode {live.stop.fail("输入服务或桌面环境发生变化，已停止执行");}
                                 drop(st);
@@ -278,7 +280,13 @@ impl AppSession {
                                 }
                             }
                             Ok(HotkeyAction::StopExecution) => {
-                                let _ = session.stop_execution(&app);
+                                // 钩子回调已直接通知当次执行；队列可能延迟到下次执行才排空。
+                                session.emit_state(&app);
+                            }
+                            Ok(HotkeyAction::StopRecording(capture_id)) => {
+                                if let Err(reason) = session.stop_recording_checked(&app, None, Some(capture_id)) {
+                                    session.set_error(&app, reason);
+                                }
                             }
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -349,6 +357,7 @@ impl AppSession {
             }
             st.mode = Mode::Idle;
             st.last_error = Some(reason);
+            crate::overlay::hide(app);
             drop(st);
             self.emit_state(app);
         }
@@ -371,8 +380,9 @@ impl AppSession {
         let geometry = platform::snapshot_geometry();
         let buffer = Arc::new(Mutex::new(RecordingBuffer::new(st.hotkeys.vks())));
         buffer.lock().unwrap().begin();
-        self.input_service()?.start_capture(buffer.clone())?;
+        let capture_id = self.input_service()?.start_capture(buffer.clone())?;
         st.mode = Mode::Recording(RecordingLive {
+            capture_id,
             gestures: platform::gesture_settings(),
             buffer,
             collected: Vec::new(),
@@ -380,13 +390,31 @@ impl AppSession {
             layout_klid: platform::current_layout_klid(),
             started_at_wall_ms: wall_ms(),
         });
+        if let Err(reason) = crate::overlay::show_recording(app) {
+            let _ = self.input_service()?.stop_capture();
+            st.mode = Mode::Idle;
+            return Err(reason);
+        }
         st.last_error = None;
         drop(st);
         self.emit_state(app);
         Ok(())
     }
     pub fn stop_recording(&self, app: &AppHandle, gesture: Option<&str>) -> Result<(), String> {
+        self.stop_recording_checked(app, gesture, None)
+    }
+    fn stop_recording_checked(
+        &self,
+        app: &AppHandle,
+        gesture: Option<&str>,
+        capture_id: Option<u64>,
+    ) -> Result<(), String> {
         let mut st = self.inner.lock().unwrap();
+        if let Some(expected) = capture_id
+            && !matches!(&st.mode, Mode::Recording(live) if live.capture_id == expected)
+        {
+            return Ok(());
+        }
         if !matches!(st.mode, Mode::Recording(_)) {
             return Err("当前没有进行中的录制".into());
         }
@@ -394,6 +422,7 @@ impl AppSession {
         let Mode::Recording(mut live) = std::mem::replace(&mut st.mode, Mode::Idle) else {
             unreachable!()
         };
+        crate::overlay::hide(app);
         let finished = live.buffer.lock().unwrap().finish();
         if finished.overflow {
             st.last_error = Some("捕获队列溢出，本次录制未替换原任务".into());
@@ -436,6 +465,7 @@ impl AppSession {
         self.input_service()?.stop_capture()?;
         st.mode = Mode::Idle;
         st.last_error = None;
+        crate::overlay::hide(app);
         drop(st);
         self.emit_state(app);
         Ok(())
@@ -663,20 +693,28 @@ impl AppSession {
                 return Err("演示只支持预览，不能执行到系统".into());
             }
             self.input_service()?.ensure_stop_available()?;
-            st.current.validate_execution()?;
+            let events = st.current.compile_for_execution()?;
             let geometry = platform::snapshot_geometry();
             if !geometry.same_layout(&st.current.geometry) {
                 return Err("显示器布局与录制时不一致，请恢复原布局后执行".into());
             }
             let spec = ScheduleSpec {
-                events: Arc::new(st.current.compile()),
+                events: Arc::new(events),
                 duration_us: st.current.duration_us,
                 rounds,
             };
             let stop = StopSignal::new();
             let driver = platform::make_driver(&stop, &geometry)?;
-            self.input_service()?.arm_execution(true)?;
             *self.execution_stop.lock().unwrap() = Some(stop.clone());
+            if let Err(error) = self.input_service()?.arm_execution(true) {
+                *self.execution_stop.lock().unwrap() = None;
+                return Err(error);
+            }
+            if let Err(error) = crate::overlay::show(app) {
+                let _ = self.input_service()?.arm_execution(false);
+                *self.execution_stop.lock().unwrap() = None;
+                return Err(error);
+            }
             let progress = Arc::new(ExecutionProgress::default());
             let prepare_until = Instant::now() + Duration::from_secs(3);
             st.mode = Mode::Executing(ExecutionLive {
@@ -693,6 +731,9 @@ impl AppSession {
         let worker = std::thread::Builder::new()
             .name("repeat-executor".into())
             .spawn(move || {
+                #[cfg(windows)]
+                let click_highlight =
+                    crate::platform::windows::click_highlight::ClickHighlight::start();
                 let outcome = match driver.wait_until(prepare_until) {
                     PacerOutcome::Cancelled => empty_outcome(rounds, true, stop.failure_reason()),
                     PacerOutcome::Failed(reason) => empty_outcome(rounds, false, Some(reason)),
@@ -715,10 +756,21 @@ impl AppSession {
                                         *progress.round_started.lock().unwrap() =
                                             Some(Instant::now());
                                     }
-                                    ProgressEvent::Injected { round, seq } => {
+                                    ProgressEvent::Injected {
+                                        round,
+                                        seq,
+                                        kind: _kind,
+                                    } => {
                                         progress.round.store(round, Ordering::SeqCst);
                                         progress.last_seq.store(seq, Ordering::SeqCst);
                                         progress.injected.fetch_add(1, Ordering::SeqCst);
+                                        #[cfg(windows)]
+                                        if let crate::event::EventKind::MouseDown { x, y, .. } =
+                                            _kind
+                                            && let Some(highlight) = &click_highlight
+                                        {
+                                            highlight.show(x, y);
+                                        }
                                     }
                                     ProgressEvent::RoundComplete { .. } => {}
                                 }
@@ -730,9 +782,12 @@ impl AppSession {
                         }
                     }
                 };
+                #[cfg(windows)]
+                drop(click_highlight);
                 if let Some(service) = session.service.get() {
                     let _ = service.arm_execution(false);
                 }
+                crate::overlay::hide(&app_worker);
                 let stats = compute_stats(&outcome.timing);
                 let mut st = session.inner.lock().unwrap();
                 if let Some(failure) = &outcome.failure {
@@ -757,6 +812,7 @@ impl AppSession {
                 self.inner.lock().unwrap().mode = Mode::Idle;
                 *self.execution_stop.lock().unwrap() = None;
                 let _ = self.input_service()?.arm_execution(false);
+                crate::overlay::hide(app);
                 self.emit_state(app);
                 return Err(format!("无法启动执行：{error}"));
             }

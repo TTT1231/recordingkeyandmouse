@@ -18,11 +18,12 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
-    MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_APP, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
+    LLKHF_INJECTED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
 
 use crate::capture::RecordingBuffer;
@@ -45,7 +46,9 @@ struct ThreadState {
     execution_active: bool,
     stop_vk: u32,
     mouse_hook: Option<HHOOK>,
+    swallow_left_up: bool,
     buffer: Option<Arc<Mutex<RecordingBuffer>>>,
+    capture_id: u64,
     on_hotkey: Option<Arc<dyn Fn(HotkeyAction) + Send + Sync>>,
 }
 
@@ -55,7 +58,9 @@ thread_local! {
         execution_active: false,
         stop_vk: 0x78,
         mouse_hook: None,
+        swallow_left_up: false,
         buffer: None,
+        capture_id: 0,
         on_hotkey: None,
     });
 }
@@ -84,7 +89,7 @@ impl InputServiceHandle {
         Ok(())
     }
 
-    pub fn start_capture(&self, buffer: Arc<Mutex<RecordingBuffer>>) -> Result<(), String> {
+    pub fn start_capture(&self, buffer: Arc<Mutex<RecordingBuffer>>) -> Result<u64, String> {
         let (tx, rx) = mpsc::channel();
         self.send_cmd(ServiceCommand::StartCaptureChecked(buffer, tx))?;
         rx.recv_timeout(std::time::Duration::from_secs(5))
@@ -260,11 +265,16 @@ fn service_thread_main(
                             stop_capture_hooks();
                         }
                         ServiceCommand::StartCaptureChecked(buffer, reply) => {
-                            let result =
-                                install_hooks().map_err(|e| format!("安装输入钩子失败：{e}"));
-                            if result.is_ok() {
-                                STATE.with(|s| s.borrow_mut().buffer = Some(buffer));
-                            }
+                            let result = install_hooks()
+                                .map_err(|e| format!("安装输入钩子失败：{e}"))
+                                .map(|()| {
+                                    STATE.with(|s| {
+                                        let mut st = s.borrow_mut();
+                                        st.capture_id = st.capture_id.wrapping_add(1);
+                                        st.buffer = Some(buffer);
+                                        st.capture_id
+                                    })
+                                });
                             let _ = reply.send(result);
                         }
                         ServiceCommand::StopCaptureChecked(reply) => {
@@ -286,8 +296,7 @@ fn service_thread_main(
                         }
                         ServiceCommand::ArmExecution(active, reply) => {
                             let result = if active {
-                                install_keyboard_hook()
-                                    .map_err(|e| format!("无法监听执行停止键：{e}"))
+                                install_hooks().map_err(|e| format!("无法监听执行停止控件：{e}"))
                             } else {
                                 Ok(())
                             };
@@ -305,7 +314,9 @@ fn service_thread_main(
                 WM_HOTKEY => {
                     let action = match msg.wParam.0 as i32 {
                         HOTKEY_ID_TOGGLE_RECORD => Some(HotkeyAction::ToggleRecording),
-                        HOTKEY_ID_STOP_EXEC => Some(HotkeyAction::StopExecution),
+                        // WM_HOTKEY does not expose injection flags; the low-level hook
+                        // handles the physical stop key instead.
+                        HOTKEY_ID_STOP_EXEC => None,
                         _ => None,
                     };
                     if let Some(action) = action {
@@ -359,8 +370,10 @@ fn install_keyboard_hook() -> windows::core::Result<()> {
     Ok(())
 }
 fn install_hooks() -> windows::core::Result<()> {
-    stop_capture_hooks();
     install_keyboard_hook()?;
+    if STATE.with(|s| s.borrow().mouse_hook.is_some()) {
+        return Ok(());
+    }
     unsafe {
         let module = GetModuleHandleW(None)?;
         let hook = SetWindowsHookExW(
@@ -374,16 +387,9 @@ fn install_hooks() -> windows::core::Result<()> {
     Ok(())
 }
 fn stop_capture_hooks() {
-    let mouse = STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        st.buffer = None;
-        st.mouse_hook.take()
-    });
-    if let Some(hook) = mouse {
-        unsafe {
-            let _ = UnhookWindowsHookEx(hook);
-        }
-    }
+    // Keep the mouse hook installed so a swallowed physical down is always
+    // paired with a swallowed up, even if execution finishes in between.
+    STATE.with(|s| s.borrow_mut().buffer = None);
 }
 
 fn uninstall_hooks() {
@@ -491,6 +497,51 @@ pub(crate) fn is_injected_by_repeat(extra_info: usize) -> bool {
     extra_info == super::REPEAT_INJECT_MARKER
 }
 
+fn is_physical_stop_key(kind: &EventKind, flags: u32, stop_vk: u32) -> bool {
+    flags & LLKHF_INJECTED.0 == 0
+        && matches!(kind, EventKind::KeyDown { vk, .. } if *vk == stop_vk || *vk == 0x1B)
+}
+
+fn is_physical_left_down(
+    msg: u32,
+    flags: u32,
+    x: i32,
+    y: i32,
+    region: Option<crate::platform::StopRegion>,
+) -> bool {
+    msg == WM_LBUTTONDOWN
+        && flags & LLMHF_INJECTED == 0
+        && region.is_some_and(|region| region.contains(x, y))
+}
+
+fn classify_stop_mouse_event(
+    pending_up: &mut bool,
+    active: bool,
+    msg: u32,
+    flags: u32,
+    x: i32,
+    y: i32,
+    region: Option<crate::platform::StopRegion>,
+) -> (bool, bool) {
+    if msg == WM_LBUTTONUP && flags & LLMHF_INJECTED == 0 && *pending_up {
+        *pending_up = false;
+        return (true, false);
+    }
+    if active && is_physical_left_down(msg, flags, x, y, region) {
+        *pending_up = true;
+        return (true, true);
+    }
+    (false, false)
+}
+
+fn overlay_stop_action(execution_active: bool, capture_id: u64) -> HotkeyAction {
+    if execution_active {
+        HotkeyAction::StopExecution
+    } else {
+        HotkeyAction::StopRecording(capture_id)
+    }
+}
+
 unsafe extern "system" fn low_level_keyboard_proc(
     code: i32,
     wparam: WPARAM,
@@ -507,8 +558,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
         {
             let (buffer, callback) = STATE.with(|s| {
                 let st = s.borrow();
-                let stop = st.execution_active
-                    && matches!(kind,EventKind::KeyDown{vk,..} if vk==st.stop_vk);
+                let stop =
+                    st.execution_active && is_physical_stop_key(&kind, info.flags.0, st.stop_vk);
                 (
                     st.buffer.clone(),
                     if stop { st.on_hotkey.clone() } else { None },
@@ -537,6 +588,41 @@ unsafe extern "system" fn low_level_mouse_proc(
         }
         let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         HOOK_CALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let msg = wparam.0 as u32;
+        let (swallow, callback) = STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            let active = st.execution_active || st.buffer.is_some();
+            let region = if active && msg == WM_LBUTTONDOWN && info.flags & LLMHF_INJECTED == 0 {
+                *crate::platform::OVERLAY_STOP_REGION.lock().unwrap()
+            } else {
+                None
+            };
+            let (swallow, stop) = classify_stop_mouse_event(
+                &mut st.swallow_left_up,
+                active,
+                msg,
+                info.flags,
+                info.pt.x,
+                info.pt.y,
+                region,
+            );
+            let action = overlay_stop_action(st.execution_active, st.capture_id);
+            (
+                swallow,
+                if stop {
+                    st.on_hotkey.clone().map(|cb| (cb, action))
+                } else {
+                    None
+                },
+            )
+        });
+        if let Some((callback, action)) = callback {
+            callback(action);
+        }
+        if swallow {
+            return LRESULT(1);
+        }
+
         if let Some(kind) = mouse_event_kind(wparam.0 as u32, info)
             && !is_injected_by_repeat(info.dwExtraInfo)
             && let Some(buffer) = STATE.with(|s| s.borrow().buffer.clone())
@@ -577,4 +663,109 @@ fn configure_hotkeys(
     }
     ready.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+#[cfg(test)]
+mod stop_control_tests {
+    use super::*;
+    use crate::platform::StopRegion;
+
+    #[test]
+    fn recording_overlay_stop_is_bound_to_capture() {
+        assert_eq!(
+            overlay_stop_action(false, 42),
+            HotkeyAction::StopRecording(42)
+        );
+        assert_eq!(overlay_stop_action(true, 42), HotkeyAction::StopExecution);
+    }
+
+    #[test]
+    fn stop_region_only_accepts_physical_left_down_inside_bounds() {
+        let region = Some(StopRegion {
+            x: -100,
+            y: 50,
+            width: 40,
+            height: 40,
+        });
+        assert!(is_physical_left_down(WM_LBUTTONDOWN, 0, -100, 50, region));
+        assert!(is_physical_left_down(WM_LBUTTONDOWN, 0, -61, 89, region));
+        assert!(!is_physical_left_down(WM_LBUTTONDOWN, 0, -60, 89, region));
+        assert!(!is_physical_left_down(
+            WM_LBUTTONDOWN,
+            LLMHF_INJECTED,
+            -100,
+            50,
+            region
+        ));
+        assert!(!is_physical_left_down(WM_LBUTTONUP, 0, -100, 50, region));
+        assert!(!is_physical_left_down(WM_MOUSEMOVE, 0, -100, 50, region));
+    }
+
+    #[test]
+    fn swallowed_up_survives_execution_end_and_injected_events() {
+        let region = Some(StopRegion {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        });
+        let mut pending = false;
+        assert_eq!(
+            classify_stop_mouse_event(
+                &mut pending,
+                true,
+                WM_LBUTTONDOWN,
+                LLMHF_INJECTED,
+                2,
+                2,
+                region
+            ),
+            (false, false)
+        );
+        assert!(!pending);
+        assert_eq!(
+            classify_stop_mouse_event(&mut pending, true, WM_LBUTTONDOWN, 0, 2, 2, region),
+            (true, true)
+        );
+        assert_eq!(
+            classify_stop_mouse_event(
+                &mut pending,
+                false,
+                WM_LBUTTONUP,
+                LLMHF_INJECTED,
+                2,
+                2,
+                None
+            ),
+            (false, false)
+        );
+        assert!(pending);
+        assert_eq!(
+            classify_stop_mouse_event(&mut pending, false, WM_LBUTTONUP, 0, 15, 15, None),
+            (true, false)
+        );
+        assert!(!pending);
+        assert_eq!(
+            classify_stop_mouse_event(&mut pending, false, WM_LBUTTONUP, 0, 15, 15, None),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn stop_key_rejects_all_injected_keys() {
+        let key = EventKind::KeyDown {
+            vk: 0x1B,
+            scan: 1,
+            extended: false,
+        };
+        assert!(is_physical_stop_key(&key, 0, 0x78));
+        assert!(!is_physical_stop_key(&key, LLKHF_INJECTED.0, 0x78));
+        let f9 = EventKind::KeyDown {
+            vk: 0x78,
+            scan: 0,
+            extended: false,
+        };
+        assert!(is_physical_stop_key(&f9, 0, 0x78));
+        assert!(!is_physical_stop_key(&f9, LLKHF_INJECTED.0, 0x78));
+    }
 }

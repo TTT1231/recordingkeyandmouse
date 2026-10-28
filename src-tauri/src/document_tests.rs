@@ -61,6 +61,91 @@ fn same(doc: &TaskDocument) -> String {
     serde_json::to_string(doc).unwrap()
 }
 const L: MouseButton = MouseButton::Left;
+
+#[test]
+fn execution_projects_only_small_exterior_moves_without_changing_recording() {
+    let d = doc(
+        vec![
+            (10, movement(-1003, 5)),
+            (20, key(0x41, true)),
+            (30, key(0x41, false)),
+            (40, movement(-1001, 5)),
+            (50, movement(0, 5)),
+        ],
+        100,
+    );
+    let before = same(&d);
+    let original = d.compile();
+    let executable = d.compile_for_execution().unwrap();
+    assert_eq!(same(&d), before, "执行准备不能改动保存的数据");
+    assert_eq!(executable.len(), original.len());
+    assert_eq!(executable[0].kind.position(), Some((-1000, 5)));
+    assert_eq!(executable[3].kind.position(), Some((-1000, 5)));
+    assert_eq!(original[0].kind.position(), Some((-1003, 5)));
+    assert_eq!(executable[4].kind, original[4].kind);
+    assert_eq!(
+        executable
+            .iter()
+            .map(|e| (e.seq, e.time_us, e.native_time_ms))
+            .collect::<Vec<_>>(),
+        original
+            .iter()
+            .map(|e| (e.seq, e.time_us, e.native_time_ms))
+            .collect::<Vec<_>>()
+    );
+    d.validate_execution().unwrap();
+    assert!(d.check_point(-1001, 5).is_err(), "编辑坐标仍须严格校验");
+}
+
+#[test]
+fn execution_rejects_outside_click_wheel_drag_and_distant_moves() {
+    let samples = [
+        vec![(10, down(L, -1001, 0)), (20, up(L, -1001, 0))],
+        vec![(
+            10,
+            EventKind::Wheel {
+                axis: WheelAxis::Vertical,
+                delta: 120,
+                x: -1001,
+                y: 0,
+            },
+        )],
+        vec![
+            (10, down(L, -1000, 0)),
+            (20, movement(-1001, 0)),
+            (30, up(L, -1000, 0)),
+        ],
+        vec![(10, movement(-1004, 0))],
+    ];
+    for sample in samples {
+        let d = doc(sample, 100);
+        assert!(d.compile_for_execution().is_err());
+    }
+}
+
+#[test]
+fn execution_rejects_monitor_gap_even_near_an_edge() {
+    let mut d = doc(vec![(10, movement(1, 0))], 100);
+    d.geometry.monitors = vec![
+        MonitorInfo {
+            name: "left".into(),
+            x: -1000,
+            y: -100,
+            width: 1000,
+            height: 100,
+            dpi: 96,
+        },
+        MonitorInfo {
+            name: "right".into(),
+            x: 3,
+            y: -100,
+            width: 1000,
+            height: 200,
+            dpi: 96,
+        },
+    ];
+    assert!(d.compile_for_execution().is_err());
+}
 #[test]
 fn grouping_keeps_every_interleaved_event_and_original_order() {
     let d = doc(

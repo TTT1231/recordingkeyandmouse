@@ -146,6 +146,147 @@ struct Receiver {
     join: Option<thread::JoinHandle<()>>,
     origin: (i32, i32),
 }
+
+/// Fixed off-screen move sample: raw geometry remains intact while the
+/// validated execution copy is actually injected into a dedicated receiver.
+#[test]
+#[ignore = "移动指针到显示器外缘并自动恢复，向专用接收窗口发送 F6 固定样本"]
+fn native_edge_move_execution_copy_preserves_raw() {
+    platform::init_process_dpi();
+    let geometry = platform::snapshot_geometry();
+    let left = geometry
+        .monitors
+        .iter()
+        .map(|m| m.x)
+        .min()
+        .expect("没有显示器");
+    let x = left.checked_sub(3).expect("显示器坐标无法构造外围样本");
+    let monitor = geometry
+        .monitors
+        .iter()
+        .find(|m| m.x == left && m.height > 0)
+        .expect("没有左缘显示器");
+    let y = monitor
+        .y
+        .checked_add(monitor.height / 2)
+        .expect("显示器坐标无效");
+    let mut doc = TaskDocument::new(
+        "屏幕边缘固定样本".into(),
+        geometry.clone(),
+        platform::current_layout_klid(),
+    );
+    let sample = [
+        (50_000, EventKind::MouseMove { x, y }),
+        (100_000, key(0x75, true)),
+        (150_000, key(0x75, false)),
+    ];
+    let raw_events: Vec<_> = sample
+        .into_iter()
+        .enumerate()
+        .map(|(i, (time_us, kind))| RecordedEvent {
+            seq: i as u64 + 1,
+            time_us,
+            native_time_ms: 0,
+            kind,
+        })
+        .collect();
+    doc.replace_recording(RawRecording {
+        gestures: Default::default(),
+        started_at_wall_ms: 0,
+        duration_us: 200_000,
+        events: raw_events,
+        geometry: geometry.clone(),
+        layout_klid: platform::current_layout_klid(),
+    });
+    let before = serde_json::to_string(&doc).unwrap();
+    let executable = doc
+        .compile_for_execution()
+        .expect("样本没有唯一的外围边缘落点");
+    assert_eq!(
+        serde_json::to_string(&doc).unwrap(),
+        before,
+        "执行准备不能修改原始任务"
+    );
+    assert_eq!(executable[0].kind.position(), Some((left, y)));
+    assert_eq!(doc.compile()[0].kind.position(), Some((x, y)));
+    struct CursorRestore(POINT);
+    impl Drop for CursorRestore {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = SetCursorPos(self.0.x, self.0.y);
+            }
+        }
+    }
+    let mut cursor = POINT::default();
+    unsafe {
+        GetCursorPos(&mut cursor).unwrap();
+    }
+    let _restore = CursorRestore(cursor);
+    let receiver = Receiver::new(true);
+    receiver.clear();
+    platform::execution_ready().expect("开始验证前请松开当前按住的键和鼠标");
+    let stop = StopSignal::new();
+    let mut driver = platform::make_driver(&stop, &geometry).unwrap();
+    let mut injected = Vec::new();
+    let mut cursor_after_move = None;
+    let spec = ScheduleSpec {
+        events: Arc::new(executable),
+        duration_us: doc.duration_us,
+        rounds: 1,
+    };
+    let outcome = run_replay(&spec, &mut driver, &stop, LATE_THRESHOLD, |event| {
+        if let repeat_lib::scheduler::ProgressEvent::Injected { seq, kind, .. } = event {
+            injected.push((seq, kind));
+            if seq == 1 {
+                let mut position = POINT::default();
+                if unsafe { GetCursorPos(&mut position) }.is_ok() {
+                    cursor_after_move = Some(position);
+                }
+            }
+        }
+    });
+    let mut after = POINT::default();
+    unsafe {
+        GetCursorPos(&mut after).unwrap();
+    }
+    let messages = receiver.messages();
+    let keys: Vec<_> = messages
+        .iter()
+        .filter(|m| matches!(m.msg, WM_KEYDOWN | WM_KEYUP) && m.value == 0x75)
+        .collect();
+    let evidence = serde_json::json!({
+        "fixture": "fixed edge move and F6 via validated execution copy and Windows SendInput",
+        "originalMove": {"x": x, "y": y},
+        "executionMove": {"x": left, "y": y},
+        "observedCursor": {"x": after.x, "y": after.y},
+        "cursorImmediatelyAfterMove": cursor_after_move.map(|p| serde_json::json!({"x":p.x,"y":p.y})),
+        "eventsInjected": outcome.events_injected,
+        "plannedAndActual": outcome.timing,
+        "receiverKeys": keys.iter().map(|m| if m.msg == WM_KEYDOWN { "WM_KEYDOWN" } else { "WM_KEYUP" }).collect::<Vec<_>>(),
+        "rawUnchanged": serde_json::to_string(&doc).unwrap() == before,
+    });
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/edge-replay-evidence.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        outcome.failure.is_none() && !outcome.stopped && outcome.rounds_completed == 1,
+        "{evidence}"
+    );
+    assert_eq!(injected.len(), 3, "{evidence}");
+    assert!(
+        cursor_after_move.is_some_and(|p| p.x == left && (p.y - y).abs() <= 1),
+        "移动注入后二维光标位置不符合预期：{evidence}"
+    );
+    assert_eq!(after.x, left, "{evidence}");
+    assert_eq!(
+        keys.iter().map(|m| m.msg).collect::<Vec<_>>(),
+        vec![WM_KEYDOWN, WM_KEYUP],
+        "{evidence}"
+    );
+    println!("EDGE_REPLAY_EVIDENCE {evidence}");
+}
 impl Receiver {
     fn new(require_focus: bool) -> Self {
         platform::init_process_dpi();
@@ -547,6 +688,78 @@ fn counts(messages: &[Received]) -> BTreeMap<u32, usize> {
     }
     result
 }
+
+#[test]
+#[ignore = "使用 SendInput 固定样本验证低级钩子与停止手势裁剪；不代表真人界面操作"]
+fn native_stop_control_preserves_interleaved_key_release() {
+    let receiver = Receiver::new(true);
+    let service = platform::start_input_service(Arc::new(|_| {})).unwrap();
+    let buffer = Arc::new(Mutex::new(RecordingBuffer::new(vec![0x77, 0x78])));
+    buffer.lock().unwrap().begin();
+    service.start_capture(buffer.clone()).unwrap();
+    let x = receiver.origin.0 + 200;
+    let y = receiver.origin.1 + 200;
+    let kinds = [
+        key(0x75, true),
+        EventKind::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+        },
+        key(0x75, false),
+        EventKind::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+        },
+    ];
+    for (index, kind) in kinds.into_iter().enumerate() {
+        external_at(kind, 0x5B00_0001 + index as u32);
+    }
+    thread::sleep(Duration::from_millis(150));
+    service.stop_capture().unwrap();
+    let mut captured = buffer.lock().unwrap().finish();
+    service.shutdown();
+    captured
+        .events
+        .retain(|event| (0x5B00_0001..=0x5B00_0004).contains(&event.native_time_ms));
+    let before = captured
+        .events
+        .iter()
+        .filter_map(|event| semantic(event.kind))
+        .collect::<Vec<_>>();
+    let duration = repeat_lib::capture::trim_control_gesture(
+        &mut captured.events,
+        captured.duration_us,
+        Some("mouse"),
+    );
+    let after = captured
+        .events
+        .iter()
+        .filter_map(|event| semantic(event.kind))
+        .collect::<Vec<_>>();
+    let evidence = serde_json::json!({
+        "fixture": "SendInput fixed sample via Windows low-level capture; not physical UI",
+        "before": before, "after": after, "durationUs": duration,
+        "events": captured.events.iter().map(|event| serde_json::json!({"seq":event.seq,"timeUs":event.time_us,"type":semantic(event.kind)})).collect::<Vec<_>>()
+    });
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/stop-control-interleaved-evidence.json");
+    std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    assert_eq!(
+        before,
+        ["down:117", "mouse-down:Left", "up:117", "mouse-up:Left"]
+    );
+    assert_eq!(after, ["down:117", "up:117"]);
+    assert!(repeat_lib::document::validate_balanced(&captured.events).is_ok());
+    assert!(
+        captured
+            .events
+            .iter()
+            .all(|event| event.time_us <= duration)
+    );
+    println!("STOP_CONTROL_INTERLEAVED_EVIDENCE {evidence}");
+}
 #[test]
 #[ignore = "向专用接收窗口发送固定输入，需交互桌面；可选同时验证隔离的 Repeat 测试实例"]
 fn native_capture_edit_save_replay_contract() {
@@ -793,8 +1006,8 @@ fn native_capture_edit_save_replay_contract() {
     let _ = std::fs::remove_file(db_path);
 }
 #[test]
-#[ignore = "真实文本与停止按键收尾；向专用接收窗口发送固定输入"]
-fn native_unicode_global_stop_and_cleanup() {
+#[ignore = "真实文本与停止信号收尾；向专用接收窗口发送固定输入"]
+fn native_unicode_stop_and_cleanup() {
     let receiver = Receiver::new(true);
     let stop = StopSignal::new();
     let copy = stop.clone();
@@ -906,14 +1119,16 @@ fn native_unicode_global_stop_and_cleanup() {
         },
     ];
     service.arm_execution(true).unwrap();
+    // This test verifies cancellation and release, not physical hotkey input.
+    // SendInput sets LLKHF_INJECTED and must never impersonate a physical stop.
+    let simulated_stop = stop.clone();
     let stopper = thread::spawn(move || {
         thread::sleep(Duration::from_millis(300));
         external(EventKind::MouseMove {
             x: x + 70,
             y: y + 45,
         });
-        external(key(0x76, true));
-        external(key(0x76, false));
+        simulated_stop.signal();
     });
     let mut driver = platform::make_driver(&stop, &doc.geometry).unwrap();
     let outcome = run_replay(
@@ -1703,4 +1918,513 @@ fn native_uipi_restricted_target_receives_nothing() {
     )
     .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Native click-through fixture: verifies the actual low-level hook and SendInput
+/// against a dedicated receiver with a transparent Win32 window above it. It is
+/// not a replacement for checking the Tauri overlay or a real physical click.
+#[test]
+#[ignore = "会在交互桌面显示窗口并向接收器注入固定鼠标和键盘事件"]
+fn native_injected_click_through_stop_region() {
+    let receiver = Receiver::new(false);
+    // A mouse click does not require prior keyboard focus, but the receiver must
+    // be above other application windows and below the test overlay.
+    unsafe {
+        SetWindowPos(
+            HWND(receiver.hwnd as *mut _),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        .unwrap();
+    }
+    let (x, y) = (receiver.origin.0 + 180, receiver.origin.1 + 180);
+    let (tx, rx) = mpsc::channel();
+    let overlay = thread::spawn(move || unsafe {
+        let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(receiver_proc),
+            hInstance: instance,
+            lpszClassName: w!("RepeatContractTransparentOverlay"),
+            ..Default::default()
+        };
+        assert_ne!(RegisterClassW(&class), 0);
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            w!("RepeatContractTransparentOverlay"),
+            w!(""),
+            WS_POPUP | WS_VISIBLE,
+            x - 20,
+            y - 20,
+            40,
+            40,
+            None,
+            None,
+            Some(instance),
+            None,
+        )
+        .unwrap();
+        SetLayeredWindowAttributes(hwnd, Default::default(), 180, LWA_ALPHA).unwrap();
+        tx.send(hwnd.0 as usize).unwrap();
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            DispatchMessageW(&msg);
+        }
+        let _ = UnregisterClassW(w!("RepeatContractTransparentOverlay"), Some(instance));
+    });
+    let overlay_hwnd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cb_count = count.clone();
+    let service = platform::start_input_service(Arc::new(move |action| {
+        if action == platform::HotkeyAction::StopExecution {
+            cb_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }))
+    .unwrap();
+    service
+        .set_hotkeys(Hotkeys {
+            record_vk: 0x75,
+            stop_vk: 0x76,
+        })
+        .unwrap();
+    platform::set_overlay_stop_region(Some(platform::StopRegion {
+        x: x - 20,
+        y: y - 20,
+        width: 40,
+        height: 40,
+    }));
+    service.arm_execution(true).unwrap();
+    receiver.clear();
+    let stop = StopSignal::new();
+    let mut driver = platform::make_driver(&stop, &platform::snapshot_geometry()).unwrap();
+    driver
+        .inject(&EventKind::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+        })
+        .unwrap();
+    driver
+        .inject(&EventKind::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+        })
+        .unwrap();
+    external(key(0x1B, true));
+    external(key(0x1B, false));
+    external(key(0x76, true));
+    external(key(0x76, false));
+    let messages = receiver.messages();
+    let clicks: Vec<_> = messages
+        .iter()
+        .filter(|m| m.msg == WM_LBUTTONDOWN || m.msg == WM_LBUTTONUP)
+        .collect();
+    let stop_count = count.load(std::sync::atomic::Ordering::SeqCst);
+    let evidence = serde_json::json!({
+        "fixture": "Win32 layered click-through overlay above dedicated receiver; not the Tauri window",
+        "stopRegion": {"x": x-20, "y": y-20, "width": 40, "height": 40},
+        "injectedAt": {"x": x, "y": y},
+        "receiverMouseEvents": clicks.iter().map(|m| serde_json::json!({"message": if m.msg == WM_LBUTTONDOWN {"WM_LBUTTONDOWN"} else {"WM_LBUTTONUP"}, "clientX": m.x, "clientY": m.y})).collect::<Vec<_>>(),
+        "injectedEscAndConfiguredStopKey": true,
+        "stopCallbacks": stop_count,
+        "physicalClickTested": false,
+    });
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/overlay-injection-evidence.json");
+    std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    platform::set_overlay_stop_region(None);
+    service.arm_execution(false).unwrap();
+    service.shutdown();
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(overlay_hwnd as *mut _)),
+            WM_CLOSE,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
+    overlay.join().unwrap();
+    assert_eq!(stop_count, 0, "注入点击或注入停止键不能触发急停");
+    assert_eq!(
+        clicks.len(),
+        2,
+        "透明窗口下方的接收器应收到鼠标 down/up：{evidence}"
+    );
+    assert_eq!(clicks[0].msg, WM_LBUTTONDOWN);
+    assert_eq!(clicks[1].msg, WM_LBUTTONUP);
+    assert_eq!((clicks[0].x, clicks[0].y), (180, 180));
+    println!("OVERLAY_NATIVE_EVIDENCE {evidence}");
+}
+
+type KeyboardProbeEvents = Arc<Mutex<Vec<(u32, u32, u32, usize)>>>;
+thread_local! { static KEYBOARD_PROBE: RefCell<Option<KeyboardProbeEvents>> = const { RefCell::new(None) }; }
+unsafe extern "system" fn fixture_keyboard_probe(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 {
+        let info = unsafe { &*(lp.0 as *const KBDLLHOOKSTRUCT) };
+        if info.vkCode == 0xA2 || info.vkCode == 0x11 {
+            KEYBOARD_PROBE.with(|slot| {
+                if let Some(events) = slot.borrow().as_ref() {
+                    events.lock().unwrap().push((
+                        wp.0 as u32,
+                        info.vkCode,
+                        info.flags.0,
+                        info.dwExtraInfo,
+                    ));
+                }
+            });
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wp, lp) }
+}
+struct KeyboardProbe {
+    thread_id: u32,
+    events: KeyboardProbeEvents,
+    join: Option<thread::JoinHandle<()>>,
+}
+impl KeyboardProbe {
+    fn start() -> Self {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let copy = events.clone();
+        let (tx, rx) = mpsc::channel();
+        let join = thread::spawn(move || unsafe {
+            KEYBOARD_PROBE.with(|slot| *slot.borrow_mut() = Some(copy));
+            let module = GetModuleHandleW(None).unwrap();
+            let hook = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(fixture_keyboard_probe),
+                Some(HINSTANCE(module.0)),
+                0,
+            )
+            .unwrap();
+            tx.send(windows::Win32::System::Threading::GetCurrentThreadId())
+                .unwrap();
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+                DispatchMessageW(&msg);
+            }
+            let _ = UnhookWindowsHookEx(hook);
+            KEYBOARD_PROBE.with(|slot| *slot.borrow_mut() = None);
+        });
+        Self {
+            thread_id: rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            events,
+            join: Some(join),
+        }
+    }
+}
+impl Drop for KeyboardProbe {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// End-to-end Tauri overlay test. Launches a new app with an isolated data
+/// directory and waits for the operator to start the pre-seeded task.
+#[test]
+#[ignore = "启动隔离 Repeat；需真人在窗口中启动固定测试任务"]
+fn native_tauri_overlay_injected_click_receiver() {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+    };
+    platform::init_process_dpi();
+    let executable = std::env::var_os("REPEAT_E2E_EXECUTABLE")
+        .expect("REPEAT_E2E_EXECUTABLE 须指向隔离测试使用的 Repeat 可执行文件");
+    let geometry = platform::snapshot_geometry();
+    let handle = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    assert!(unsafe { GetMonitorInfoW(handle, &mut info) }.as_bool());
+    let monitor = geometry
+        .monitors
+        .iter()
+        .find(|m| m.x == info.rcMonitor.left && m.y == info.rcMonitor.top)
+        .expect("未找到主显示器");
+    let scale = monitor.dpi as f64 / 96.0;
+    let width = (300.0 * scale).round() as i32;
+    let height = (52.0 * scale).round() as i32;
+    let work_width = info.rcWork.right - info.rcWork.left;
+    let work_height = info.rcWork.bottom - info.rcWork.top;
+    let margin = ((20.0 * scale).round() as i32).min(work_height - height);
+    let overlay_left = info.rcWork.left + (work_width - width) / 2;
+    let overlay_top = info.rcWork.bottom - height - margin;
+    let x = overlay_left + (272.0 * scale).round() as i32;
+    let y = overlay_top + (26.0 * scale).round() as i32;
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("overlay-e2e-{}", std::process::id()));
+    std::fs::create_dir(&data_dir).expect("测试目录已存在或无法创建");
+    let mut doc = TaskDocument::new(
+        "状态条穿透验收固定样本".into(),
+        geometry.clone(),
+        platform::current_layout_klid(),
+    );
+    let physical_stop = std::env::var_os("REPEAT_E2E_PHYSICAL_STOP").is_some();
+    let sample: Vec<(EventKind, i64)> = if physical_stop {
+        vec![(key(0xA2, true), 100_000), (key(0xA2, false), 60_000_000)]
+    } else {
+        vec![
+            (
+                EventKind::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                },
+                100_000,
+            ),
+            (
+                EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                },
+                160_000,
+            ),
+            (key(0x75, true), 800_000),
+            (key(0x75, false), 860_000),
+        ]
+    };
+    let events = sample
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, time_us))| RecordedEvent {
+            seq: index as u64 + 1,
+            time_us,
+            native_time_ms: 0,
+            kind,
+        })
+        .collect();
+    doc.replace_recording(RawRecording {
+        gestures: Default::default(),
+        started_at_wall_ms: 0,
+        duration_us: if physical_stop { 60_200_000 } else { 1_200_000 },
+        events,
+        geometry,
+        layout_klid: platform::current_layout_klid(),
+    });
+    doc.validate_execution().unwrap();
+    let mut store = Store::open(&data_dir.join("tasks.sqlite3")).unwrap();
+    store.insert(&doc).unwrap();
+    // Keep the isolated instance independent of a user's running Repeat.
+    store
+        .set_setting(
+            "hotkeys",
+            &serde_json::to_string(&Hotkeys {
+                record_vk: 0x79,
+                stop_vk: 0x7a,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    struct ChildCleanup {
+        process: std::process::Child,
+        physical_stop: bool,
+    }
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+            if self.physical_stop && unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0 {
+                // Safety fallback if the test aborts while the fixture holds Ctrl.
+                external(key(0xA2, false));
+            }
+        }
+    }
+    let child = Command::new(executable)
+        .env("REPEAT_DATA_DIR", &data_dir)
+        .spawn()
+        .expect("无法启动隔离 Repeat");
+    let mut child = ChildCleanup {
+        process: child,
+        physical_stop,
+    };
+    let keyboard_probe = physical_stop.then(KeyboardProbe::start);
+    let receiver = Receiver::new(false);
+    println!(
+        "TAURI_OVERLAY_READY pid={} data={} click=({},{}): 请在新打开的 Repeat 中点击一次执行到系统",
+        child.process.id(),
+        data_dir.display(),
+        x,
+        y
+    );
+    let started = Instant::now();
+    let overlay_hwnd = loop {
+        let mut previous = None;
+        while let Ok(hwnd) =
+            unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行状态")) }
+        {
+            let mut owner_pid = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, Some(&mut owner_pid));
+            }
+            previous = Some(hwnd);
+            if owner_pid == child.process.id() && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+                break;
+            }
+        }
+        if let Some(hwnd) = previous
+            && unsafe { IsWindowVisible(hwnd) }.as_bool()
+        {
+            let mut owner_pid = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, Some(&mut owner_pid));
+            }
+            if owner_pid == child.process.id() {
+                break hwnd;
+            }
+        }
+        if started.elapsed() > Duration::from_secs(120) {
+            let _ = child.process.kill();
+            panic!("未等到隔离实例的状态条，请在 120 秒内启动固定任务");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let mut overlay_rect = windows::Win32::Foundation::RECT::default();
+    unsafe {
+        GetWindowRect(overlay_hwnd, &mut overlay_rect).unwrap();
+    }
+    // The full-screen execution frame must actually paint, remain non-activating,
+    // and let pointer hit testing reach underlying windows. A visible HWND alone
+    // is insufficient to verify this visual contract.
+    thread::sleep(Duration::from_millis(800));
+    let mut previous = None;
+    let frame_hwnd = loop {
+        let found = unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行范围")) }
+            .expect("未找到隔离实例的执行边框窗口");
+        let mut frame_pid = 0;
+        unsafe { GetWindowThreadProcessId(found, Some(&mut frame_pid)) };
+        if frame_pid == child.process.id() {
+            break found;
+        }
+        previous = Some(found);
+    };
+    assert!(unsafe { IsWindowVisible(frame_hwnd) }.as_bool());
+    assert_ne!(
+        unsafe { GetForegroundWindow() },
+        frame_hwnd,
+        "边框不能抢占焦点"
+    );
+    let dc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
+    assert!(!dc.is_invalid());
+    let screen_x = info.rcMonitor.left + work_width / 2;
+    let blue = (0..12).any(|dy| {
+        let value = unsafe {
+            windows::Win32::Graphics::Gdi::GetPixel(dc, screen_x, info.rcMonitor.top + dy)
+        }
+        .0;
+        value == 0x00ff_8839
+    });
+    unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, dc) };
+    assert!(blue, "屏幕顶部未绘制期望的蓝色边框");
+    if (overlay_rect.left - overlay_left).abs() > 1 || (overlay_rect.top - overlay_top).abs() > 1 {
+        let _ = child.process.kill();
+        panic!(
+            "隔离实例显示器或 DPI 与固定脚本不一致，未执行验收: expected=({overlay_left},{overlay_top}), actual=({},{})",
+            overlay_rect.left, overlay_rect.top
+        );
+    }
+    unsafe {
+        SetWindowPos(
+            HWND(receiver.hwnd as *mut _),
+            Some(HWND_TOP),
+            x - 250,
+            y - 250,
+            500,
+            400,
+            SWP_NOACTIVATE,
+        )
+        .unwrap();
+        let _ = SendMessageW(HWND(receiver.hwnd as *mut _), WM_APP + 12, None, None);
+    }
+    receiver.clear();
+    if physical_stop {
+        thread::sleep(Duration::from_millis(3400));
+        let held_before = unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0;
+        assert!(held_before, "隔离任务尚未按住 Ctrl，不能验证停止释放");
+        println!("TAURI_PHYSICAL_STOP_READY ctrlHeld=true: 请真人点击底部状态条的停止按钮");
+        let wait = Instant::now();
+        while unsafe { IsWindowVisible(overlay_hwnd) }.as_bool()
+            && wait.elapsed() < Duration::from_secs(50)
+        {
+            thread::sleep(Duration::from_millis(30));
+        }
+        let overlay_hidden = !unsafe { IsWindowVisible(overlay_hwnd) }.as_bool();
+        thread::sleep(Duration::from_millis(300));
+        let held_after = unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0;
+        let messages = receiver.messages();
+        let keyboard: Vec<_> = messages
+            .iter()
+            .filter(|m| matches!(m.msg, WM_KEYDOWN | WM_KEYUP) && matches!(m.value, 0x11 | 0xA2))
+            .collect();
+        let hook_events = keyboard_probe
+            .as_ref()
+            .unwrap()
+            .events
+            .lock()
+            .unwrap()
+            .clone();
+        let injected = |msg| {
+            hook_events.iter().any(|(event, vk, flags, marker)| {
+                *event == msg
+                    && *vk == 0xA2
+                    && *flags & LLKHF_INJECTED.0 != 0
+                    && *marker == platform::windows::REPEAT_INJECT_MARKER
+            })
+        };
+        let evidence = serde_json::json!({"fixture":"real Tauri overlay; isolated Ctrl hold; operator requested to click physical stop", "dataDir":data_dir, "ctrlHeldBeforeStop":held_before, "overlayHiddenAfterStop":overlay_hidden, "ctrlHeldAfterStop":held_after, "elapsedAfterReadyMs":wait.elapsed().as_millis(), "hookEvents":hook_events.iter().map(|(msg,vk,flags,marker)| serde_json::json!({"message":if *msg == WM_KEYDOWN {"WM_KEYDOWN"} else {"WM_KEYUP"}, "vk":vk, "injected":flags & LLKHF_INJECTED.0 != 0, "repeatMarker":*marker == platform::windows::REPEAT_INJECT_MARKER})).collect::<Vec<_>>(), "receiverEvents":keyboard.iter().map(|m| serde_json::json!({"message":if m.msg == WM_KEYDOWN {"WM_KEYDOWN"} else {"WM_KEYUP"}, "value":m.value})).collect::<Vec<_>>()});
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/tauri-overlay-physical-stop-evidence.json");
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        assert!(
+            overlay_hidden,
+            "未在超时内停止；隔离任务会自动释放 Ctrl：{evidence}"
+        );
+        assert!(!held_after, "停止后 Ctrl 未释放：{evidence}");
+        assert!(
+            injected(WM_KEYDOWN) && injected(WM_KEYUP),
+            "钩子未观察到 Repeat 注入的成对 Ctrl 事件：{evidence}"
+        );
+        println!("TAURI_PHYSICAL_STOP_EVIDENCE {evidence}");
+        return;
+    }
+    thread::sleep(Duration::from_secs(5));
+    let messages = receiver.messages();
+    let relevant: Vec<_> = messages
+        .iter()
+        .filter(|m| matches!(m.msg, WM_LBUTTONDOWN | WM_LBUTTONUP | WM_KEYDOWN | WM_KEYUP))
+        .collect();
+    let kinds: Vec<_> = relevant
+        .iter()
+        .map(|m| match m.msg {
+            WM_LBUTTONDOWN => "WM_LBUTTONDOWN",
+            WM_LBUTTONUP => "WM_LBUTTONUP",
+            WM_KEYDOWN => "WM_KEYDOWN",
+            _ => "WM_KEYUP",
+        })
+        .collect();
+    let evidence = serde_json::json!({"fixture":"real Tauri replay-overlay and isolated fixed task", "dataDir":data_dir, "overlayRect":{"left":overlay_rect.left,"top":overlay_rect.top,"right":overlay_rect.right,"bottom":overlay_rect.bottom}, "injectedAt":{"x":x,"y":y}, "receiverEvents":relevant.iter().map(|m| serde_json::json!({"message":match m.msg { WM_LBUTTONDOWN => "WM_LBUTTONDOWN", WM_LBUTTONUP => "WM_LBUTTONUP", WM_KEYDOWN => "WM_KEYDOWN", _ => "WM_KEYUP" }, "value":m.value,"clientX":m.x,"clientY":m.y})).collect::<Vec<_>>()});
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/tauri-overlay-injection-evidence.json");
+    std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    let _ = child.process.kill();
+    let _ = child.process.wait();
+    assert_eq!(
+        kinds,
+        ["WM_LBUTTONDOWN", "WM_LBUTTONUP", "WM_KEYDOWN", "WM_KEYUP"],
+        "注入点击或后续哨兵事件缺失：{evidence}"
+    );
+    assert_eq!(relevant[2].value, 0x75);
+    assert_eq!(relevant[3].value, 0x75);
+    println!("TAURI_OVERLAY_NATIVE_EVIDENCE {evidence}");
 }

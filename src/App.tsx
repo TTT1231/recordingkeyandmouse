@@ -12,7 +12,7 @@ import { ViewerArea } from "./components/ViewerArea";
 import { WindowResizeHandles } from "./components/WindowResizeHandles";
 import { INFINITE_ROUNDS, repeatRounds, type RepeatMode } from "./repeat";
 import { NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/WorkspaceDialogs";
-import { vkName } from "./format";
+import { stopKeyNames, vkName } from "./format";
 import { SIDEBAR_DEFAULT, SIDEBAR_OPEN_KEY, SIDEBAR_WIDTH_KEY, clampSidebarWidth } from "./layout";
 import type { ActionView, EditRequest, SessionSnapshot, WorkspaceView } from "./types";
 import { version } from "../package.json";
@@ -514,7 +514,6 @@ export default function App() {
                             setPlaying(false);
                             void run(() => api.startExecution(document, rounds));
                         }}
-                        onStopExecution={() => void run(api.stopExecution)}
                         onReplay={() => {
                             setPlaying(false);
                             setTimeUs(0);
@@ -541,7 +540,7 @@ export default function App() {
                     {mode === "preparing" && (
                         <div className="executing-notice" role="status">
                             将在 {Math.max(1, Math.ceil((session.executionLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
-                            秒后执行；{vkName(session.hotkeys.stopVk)} 可取消。
+                            秒后执行；{stopKeyNames(session.hotkeys.stopVk)} 可取消。
                         </div>
                     )}
                     {mode === "executing" && session.executionLive && (

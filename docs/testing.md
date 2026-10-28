@@ -8,12 +8,21 @@
 
 ```powershell
 cargo test --test native_contract native_capture_edit_save_replay_contract -- --ignored --nocapture --test-threads=1
-cargo test --test native_contract native_unicode_global_stop_and_cleanup -- --ignored --nocapture --test-threads=1
+cargo test --test native_contract native_unicode_stop_and_cleanup -- --ignored --nocapture --test-threads=1
+cargo test --test native_contract native_injected_click_through_stop_region -- --ignored --nocapture --test-threads=1
+cargo test --test native_contract native_stop_control_preserves_interleaved_key_release -- --ignored --nocapture --test-threads=1
+cargo test --test native_contract native_edge_move_execution_copy_preserves_raw -- --ignored --nocapture --test-threads=1
 cargo test --test native_contract native_keys_edit_preservation -- --ignored --nocapture --test-threads=1
 cargo test --test native_contract native_environment_messages_cancel_before_input -- --ignored --nocapture --test-threads=1
+cargo test --test native_edge_diagnostics native_injected_left_edge_hook_coordinates -- --ignored --nocapture --test-threads=1
+cargo test native_click_highlight_pixels_and_passthrough -- --ignored --nocapture --test-threads=1
 ```
 
-这些测试分别覆盖捕获 → 编辑 → 保存重开 → 执行，明确文本与全局停止收尾，键盘编辑保真，以及环境通知取消。具体断言以 [native_contract.rs](../src-tauri/tests/native_contract.rs) 为准；[native_roundtrip.rs](../src-tauri/tests/native_roundtrip.rs) 提供更小的钩子和计时器排查用例。
+这些测试分别覆盖捕获 → 编辑 → 保存重开 → 执行，明确文本与停止信号触发后的收尾，注入点击穿透 Win32 测试窗口与注入停止键过滤，停止点击期间交错输入的保留，键盘编辑保真，环境通知取消，屏幕边缘的钩子与光标位置，以及点位高亮的像素、穿透和消失。穿透、交错输入与边缘测试使用固定的合成输入，不能代替真人界面或物理硬件验收。具体断言以 [native_contract.rs](../src-tauri/tests/native_contract.rs) 为准；[native_roundtrip.rs](../src-tauri/tests/native_roundtrip.rs) 提供更小的钩子和计时器排查用例。
+
+实际 Tauri 状态条验收使用同文件中的 `native_tauri_overlay_injected_click_receiver`：先启动前端开发服务器，将 `REPEAT_E2E_EXECUTABLE` 设为已编译的 Repeat 可执行文件绝对路径，再单独运行该 ignored 测试并按提示在隔离实例中启动任务。设置 `REPEAT_E2E_PHYSICAL_STOP=1` 可改测真人停止及 Ctrl 释放；结束后还原环境变量。测试只使用 `target/` 下的隔离数据，不读取用户任务。
+
+录制状态条验收入口为 `cargo test --test native_recording_overlay native_recording_overlay_stop_preserves_prior_click -- --ignored --nocapture --test-threads=1`，同样需前端开发服务器和 `REPEAT_E2E_EXECUTABLE`；在隔离实例中开始录制，点击一次空白处，再点状态条停止。测试核对先前点击成对保留，停止点击未录入。
 
 长移动与停顿样本使用同一测试，设置时长后运行并还原环境变量：
 
@@ -50,7 +59,9 @@ try {
 - 停止后不得继续注入计划事件，仅允许必要释放；核对本次持有的键鼠均释放且指针不跳回。
 - `plannedUs` / `actualUs` 相对当前轮起点；`actualUs` 在注入调用成功返回后采样。比较偏差分位数、最大值和首轮首末误差差值，不与独立接收器时钟直接相减。单次停止观察值不能充当端到端延迟或 P95。
 
-测试自动生成证据到 `src-tauri/target/`：`native-contract-evidence.json`、`keys-edit-evidence.json`、`app-execution-evidence.json`，UIPI 用例生成 `uipi-evidence.json`。相同测试重跑会覆盖输出，应将需要留存的固定样本证据附在对应变更或测试归档中，不提交普通用户录制内容。后端还有 `get_execution_report`，当前界面没有报告查看或导出入口。
+测试自动生成证据到 `src-tauri/target/`：`native-contract-evidence.json`、`keys-edit-evidence.json`、`app-execution-evidence.json`，UIPI 用例生成 `uipi-evidence.json`。状态条穿透的 Win32 替身窗口固定样本写入 `overlay-injection-evidence.json`：停止区域内的注入点击到达底层接收器，注入 Esc 和配置停止键未触发停止回调。实际 Tauri 状态条的隔离样本证据写入 `tauri-overlay-injection-evidence.json`：单屏 1920×1080 / 125% 下，蓝色边框像素可见、边框未取得焦点；停止区域物理坐标 (1112, 973) 的注入点击到达底层接收器，随后收到 F6 down/up，回放继续。`tauri-overlay-physical-stop-evidence.json` 的最近一次样本改为执行期间关闭主窗口：窗口关闭后系统 Ctrl 不再按下，但探针未记录带 Repeat 标记的 Ctrl 抬起事件，需继续核对退出收尾。相同测试重跑会覆盖输出，应将需要留存的固定样本证据附在对应变更或测试归档中，不提交普通用户录制内容。后端还有 `get_execution_report`，当前界面没有报告查看或导出入口。
+
+本机单屏 1920×1080 / 125% 的录制状态条固定样本在 `recording-overlay-evidence.json` 中保留了普通点击的 down/up，停止区域未出现点击事件。`stop-control-interleaved-evidence.json` 记录了通过 Windows 钩子捕获的合成样本：按键抬起发生在停止点击的 down/up 之间，移除停止点击后该按键仍完整配对，其他鼠标移动亦保留；该样本不代表真人界面操作。`left-edge-hook-evidence.json` 记录了向左的固定注入移动：低级钩子报告屏幕左侧外 2 像素时，系统光标仍位于左边缘；它不能证明真实物理鼠标的所有行为。`edge-replay-evidence.json` 记录了边缘越界移动的执行副本映射、实际二维光标位置和接收窗口的按键按下／抬起，原始记录未改变。`click-highlight-evidence.json` 记录了蓝色点位像素、穿透到专用接收器的鼠标 down/up，以及提示关闭后像素恢复。
 
 内部计时参考目标是空载 P95 ≤ 5 ms、P99 ≤ 15 ms，三分钟首末误差差值绝对值 ≤ 20 ms，原生停止观察 P95 ≤ 50 ms；它们用于比较回归，不是用户验收门槛或所有环境的性能承诺。
 
@@ -76,7 +87,7 @@ try {
 | --- | --- |
 | Windows 功能回归 | 已实测三分钟混合键鼠录放、全部动作编辑、任务切换与保存重开、演示隔离、应用捕获联动与三轮执行；尚缺参考图选点、侧栏调宽与小窗口、保存失败重试，以及无限循环停止的界面驱动执行 |
 | 显示与应用兼容 | 多屏、负坐标、不同 DPI、更多目标应用待验证 |
-| 特殊环境与停止 | UIPI 权限受限目标、真实锁屏和睡眠用例已编写，尚待实测 |
+| 特殊环境与停止 | 单屏 1920×1080 / 125% 下，录制状态条、执行蓝框及注入点击穿透已按固定样本核对。执行期间关闭主窗口可退出，但 Ctrl 抬起的探针证据不完整；目标窗口的 Ctrl 抬起消息及跨 DPI 命中待进一步核对。UIPI 权限受限目标、真实锁屏和睡眠用例已编写，尚待实测 |
 | 性能与规模 | 长时间录制、高频输入及繁忙负载下的稳定性、内存和磁盘增长待测量 |
 | 打包与安装 | 已构建 NSIS 安装包并验收安装、独立启动与卸载；MSI 暂缺（WiX 工具链无法下载） |
 | Linux X11 | 后端未实现；还需输入链路、桌面界面及安装验证 |

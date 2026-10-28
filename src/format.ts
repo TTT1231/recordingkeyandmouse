@@ -45,6 +45,11 @@ export function formatSeconds(us: number): string {
     return `${seconds} 秒`;
 }
 
+/** 执行中 Esc 始终可用，用户也可配置额外的停止键。 */
+export function stopKeyNames(vk: number): string {
+    return vk === 0x1b ? "Esc" : `Esc / ${vkName(vk)}`;
+}
+
 const VK_NAMES = new Map<number, string>([
     [0x08, "Backspace"],
     [0x09, "Tab"],

@@ -143,9 +143,17 @@ pub fn validate_recording(
 /// 进度回调数据。
 #[derive(Clone, Copy, Debug)]
 pub enum ProgressEvent {
-    RoundStart { round: u32 },
-    Injected { round: u32, seq: u64 },
-    RoundComplete { round: u32 },
+    RoundStart {
+        round: u32,
+    },
+    Injected {
+        round: u32,
+        seq: u64,
+        kind: EventKind,
+    },
+    RoundComplete {
+        round: u32,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -310,7 +318,11 @@ fn run_round(
                     planned_us: ev.time_us,
                     actual_us,
                 });
-                on_progress(ProgressEvent::Injected { round, seq: ev.seq });
+                on_progress(ProgressEvent::Injected {
+                    round,
+                    seq: ev.seq,
+                    kind: ev.kind,
+                });
             }
         }
         if actual_us.saturating_sub(ev.time_us) > late_threshold.as_micros() as i64 {
@@ -656,6 +668,28 @@ mod tests {
         assert_eq!(f.seq, Some(3));
         assert_eq!(outcome.events_injected, 2);
         assert_eq!(outcome.rounds_completed, 0, "失败轮不计为完成");
+    }
+
+    #[test]
+    fn progress_reports_only_successfully_injected_physical_coordinates() {
+        let click = EventKind::MouseDown {
+            button: MouseButton::Left,
+            x: -120,
+            y: 45,
+        };
+        let events = vec![ev(1, 0, click), ev(2, 10, key(0x41, true))];
+        let spec = spec_of(events, 20, 1);
+        let stop = StopSignal::new();
+        let mut driver = MockDriver::new(stop.clone());
+        driver.fail_on_seq = Some(2);
+        let mut observed = Vec::new();
+        let outcome = run_replay(&spec, &mut driver, &stop, LATE_THRESHOLD, |event| {
+            if let ProgressEvent::Injected { kind, .. } = event {
+                observed.push(kind);
+            }
+        });
+        assert!(outcome.failure.is_some());
+        assert_eq!(observed, vec![click]);
     }
 
     #[test]

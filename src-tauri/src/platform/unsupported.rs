@@ -14,7 +14,7 @@ impl InputServiceHandle {
     pub fn start_capture(
         &self,
         _buffer: Arc<std::sync::Mutex<RecordingBuffer>>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         Err("当前平台不能录制系统输入".into())
     }
     pub fn stop_capture(&self) -> Result<(), String> {

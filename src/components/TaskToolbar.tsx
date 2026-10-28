@@ -1,4 +1,4 @@
-import { formatClock, vkName } from "../format";
+import { formatClock, stopKeyNames, vkName } from "../format";
 import { repeatModeLabel, repeatSummary, type RepeatMode } from "../repeat";
 import type { DocumentView, SessionSnapshot } from "../types";
 import { Icon } from "./Icon";
@@ -15,7 +15,6 @@ interface Props {
     onStopRecording: (gesture: string | null) => void;
     onCancelRecording: () => void;
     onStartExecution: () => void;
-    onStopExecution: () => void;
     onReplay: () => void;
     onResetDemo: () => void;
     onExitDemo: () => void;
@@ -165,11 +164,10 @@ export function TaskToolbar(p: Props) {
                             <>
                                 <span className="toolbar-separator" />
                                 {executing ? (
-                                    <button type="button" className="button stop" onClick={p.onStopExecution}>
+                                    <span className="button stop" role="status">
                                         <Icon name="pause" />
-                                        {mode === "preparing" ? "取消执行" : "停止执行"}（
-                                        {vkName(p.snapshot.hotkeys.stopVk)}）
-                                    </button>
+                                        使用状态条或 {stopKeyNames(p.snapshot.hotkeys.stopVk)} 停止
+                                    </span>
                                 ) : (
                                     <button
                                         type="button"

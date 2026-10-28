@@ -1,5 +1,6 @@
 //! Windows 平台层：DPI 声明、显示器几何、键盘布局名与注入来源标记。
 
+pub(crate) mod click_highlight;
 pub mod driver;
 mod environment;
 pub mod input_service;

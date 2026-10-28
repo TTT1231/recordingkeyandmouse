@@ -1,0 +1,64 @@
+html.replay-overlay-window,
+html.replay-overlay-window body,
+html.replay-overlay-window #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: transparent;
+}
+
+.replay-overlay {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 300px;
+    height: 52px;
+    padding: 0 52px 0 16px;
+    overflow: hidden;
+    color: #f4f7fc;
+    background: rgba(15, 23, 42, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 26px;
+    font: 13px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.replay-overlay-dot {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    background: #60a5fa;
+    border-radius: 50%;
+    box-shadow: 0 0 9px rgba(96, 165, 250, 0.65);
+}
+
+.replay-overlay-recording .replay-overlay-dot {
+    background: #f87171;
+    box-shadow: 0 0 9px rgba(248, 113, 113, 0.65);
+}
+
+.replay-overlay-recording .replay-overlay-label { color: #fca5a5; }
+
+.replay-overlay-details { display: grid; flex: 1; min-width: 0; gap: 5px; }
+.replay-overlay-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.replay-overlay-label { color: #a9d2ff; font-weight: 600; }
+.replay-overlay-round { overflow: hidden; color: #dce8f6; text-overflow: ellipsis; }
+.replay-overlay-secondary { color: #aebccc; font-size: 11px; }
+.replay-overlay-time { font-variant-numeric: tabular-nums; }
+
+.replay-overlay-stop {
+    position: absolute;
+    left: 252px;
+    top: 6px;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 50%;
+}
+
+.replay-overlay-stop span { width: 10px; height: 10px; background: #fff; border-radius: 2px; }

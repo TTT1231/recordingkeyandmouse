@@ -217,13 +217,13 @@ impl Hotkeys {
     }
 }
 
-/// 按钮触发的停止不属于录制内容。鼠标以最近的抬起配对按下，允许长按停止按钮。
+/// 按钮触发的停止不属于录制内容，只移除其配对事件，不能截断并发的其他输入。
 pub fn trim_control_gesture(
     events: &mut Vec<RecordedEvent>,
     duration: i64,
     gesture: Option<&str>,
 ) -> i64 {
-    let down = match gesture {
+    let gesture = match gesture {
         Some("mouse") => events
             .iter()
             .rev()
@@ -237,30 +237,48 @@ pub fn trim_control_gesture(
                 ) && duration.saturating_sub(e.time_us) < 1_000_000
             })
             .and_then(|up| {
-                events.iter().rev().find(|e| {
-                    e.seq < up.seq
-                        && matches!(
-                            e.kind,
-                            EventKind::MouseDown {
-                                button: crate::event::MouseButton::Left,
-                                ..
-                            }
-                        )
-                })
+                events
+                    .iter()
+                    .rev()
+                    .find(|e| {
+                        e.seq < up.seq
+                            && matches!(
+                                e.kind,
+                                EventKind::MouseDown {
+                                    button: crate::event::MouseButton::Left,
+                                    ..
+                                } | EventKind::MouseUp {
+                                    button: crate::event::MouseButton::Left,
+                                    ..
+                                }
+                            )
+                    })
+                    .filter(|e| matches!(e.kind, EventKind::MouseDown { .. }))
+                    .map(|down| (down.seq, Some(up.seq), down.time_us))
             }),
         Some("enter") | Some("space") => {
             let vk = if gesture == Some("enter") { 13 } else { 32 };
-            events.iter().rev().find(|e| {
-                matches!(e.kind,EventKind::KeyDown{vk:actual,..} if actual==vk)
-                    && duration.saturating_sub(e.time_us) < 1_000_000
-            })
+            events
+                .iter()
+                .rev()
+                .find(|e| {
+                    matches!(e.kind,EventKind::KeyDown{vk:actual,..} if actual==vk)
+                        && duration.saturating_sub(e.time_us) < 1_000_000
+                })
+                .map(|down| {
+                    let up = events.iter().find(|e| {
+                        e.seq > down.seq
+                            && matches!(e.kind, EventKind::KeyUp { vk: actual, .. } if actual == vk)
+                    });
+                    (down.seq, up.map(|e| e.seq), down.time_us)
+                })
         }
         _ => None,
-    }
-    .map(|e| (e.seq, e.time_us));
-    if let Some((seq, at)) = down {
-        events.retain(|e| e.seq < seq);
-        at
+    };
+    if let Some((down_seq, up_seq, at)) = gesture {
+        events.retain(|e| e.seq != down_seq && Some(e.seq) != up_seq);
+        // 保留同时发生的其他事件，不让结束时间早于任何保留事件。
+        events.iter().map(|e| e.time_us).max().unwrap_or(0).max(at)
     } else {
         duration
     }
@@ -487,6 +505,186 @@ mod tests {
         let duration = trim_control_gesture(&mut events, 4_001_000, Some("mouse"));
         assert_eq!(duration, 1_000_000);
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn mouse_stop_preserves_other_input_and_paired_releases_during_click() {
+        let mut events = vec![
+            RecordedEvent {
+                seq: 1,
+                time_us: 100,
+                native_time_ms: 0,
+                kind: key(0x41, true),
+            },
+            RecordedEvent {
+                seq: 2,
+                time_us: 200,
+                native_time_ms: 0,
+                kind: EventKind::MouseDown {
+                    button: MouseButton::Left,
+                    x: 20,
+                    y: 20,
+                },
+            },
+            RecordedEvent {
+                seq: 3,
+                time_us: 300,
+                native_time_ms: 0,
+                kind: key(0x41, false),
+            },
+            RecordedEvent {
+                seq: 4,
+                time_us: 400,
+                native_time_ms: 0,
+                kind: EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x: 20,
+                    y: 20,
+                },
+            },
+            RecordedEvent {
+                seq: 5,
+                time_us: 500,
+                native_time_ms: 0,
+                kind: EventKind::MouseMove { x: 25, y: 25 },
+            },
+        ];
+        let duration = trim_control_gesture(&mut events, 600, Some("mouse"));
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 3, 5]
+        );
+        assert_eq!(duration, 500);
+        assert!(crate::document::validate_balanced(&events).is_ok());
+        let mut compiled: Vec<_> = crate::document::group_events(&events)
+            .iter()
+            .flat_map(|action| action.events.iter().copied())
+            .collect();
+        compiled.sort_by_key(|event| (event.time_us, event.seq));
+        assert_eq!(compiled, events);
+        assert!(crate::document::validate_balanced(&compiled).is_ok());
+    }
+
+    #[test]
+    fn mouse_stop_does_not_reuse_an_already_released_press() {
+        let mut events = vec![
+            RecordedEvent {
+                seq: 1,
+                time_us: 100,
+                native_time_ms: 0,
+                kind: EventKind::MouseDown {
+                    button: MouseButton::Left,
+                    x: 1,
+                    y: 1,
+                },
+            },
+            RecordedEvent {
+                seq: 2,
+                time_us: 200,
+                native_time_ms: 0,
+                kind: EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x: 1,
+                    y: 1,
+                },
+            },
+            RecordedEvent {
+                seq: 3,
+                time_us: 300,
+                native_time_ms: 0,
+                kind: EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x: 2,
+                    y: 2,
+                },
+            },
+        ];
+        assert_eq!(trim_control_gesture(&mut events, 400, Some("mouse")), 400);
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn mouse_stop_preserves_release_after_control_click() {
+        let mut events = vec![
+            RecordedEvent {
+                seq: 1,
+                time_us: 100,
+                native_time_ms: 0,
+                kind: key(0x41, true),
+            },
+            RecordedEvent {
+                seq: 2,
+                time_us: 200,
+                native_time_ms: 0,
+                kind: EventKind::MouseDown {
+                    button: MouseButton::Left,
+                    x: 1,
+                    y: 1,
+                },
+            },
+            RecordedEvent {
+                seq: 3,
+                time_us: 300,
+                native_time_ms: 0,
+                kind: EventKind::MouseUp {
+                    button: MouseButton::Left,
+                    x: 1,
+                    y: 1,
+                },
+            },
+            RecordedEvent {
+                seq: 4,
+                time_us: 400,
+                native_time_ms: 0,
+                kind: key(0x41, false),
+            },
+        ];
+        assert_eq!(trim_control_gesture(&mut events, 500, Some("mouse")), 400);
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+        assert!(crate::document::validate_balanced(&events).is_ok());
+    }
+
+    #[test]
+    fn keyboard_stop_preserves_unrelated_events_and_removes_its_own_pair() {
+        let mut events = vec![
+            RecordedEvent {
+                seq: 1,
+                time_us: 100,
+                native_time_ms: 0,
+                kind: key(0x41, true),
+            },
+            RecordedEvent {
+                seq: 2,
+                time_us: 200,
+                native_time_ms: 0,
+                kind: key(13, true),
+            },
+            RecordedEvent {
+                seq: 3,
+                time_us: 300,
+                native_time_ms: 0,
+                kind: key(0x41, false),
+            },
+            RecordedEvent {
+                seq: 4,
+                time_us: 400,
+                native_time_ms: 0,
+                kind: key(13, false),
+            },
+        ];
+        let duration = trim_control_gesture(&mut events, 500, Some("enter"));
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(duration, 300);
+        assert!(crate::document::validate_balanced(&events).is_ok());
     }
     #[test]
     fn hotkey_stop_preserves_the_tail_pause_and_unrelated_click() {
