@@ -99,6 +99,8 @@ export interface SessionSnapshot {
     lastError: string | null;
     hotkeyStatus: string[];
     hotkeys: Hotkeys;
+    recordHotkeyAvailable: boolean;
+    stopHotkeyAvailable: boolean;
     canUndo: boolean;
     canRedo: boolean;
     isDemo: boolean;

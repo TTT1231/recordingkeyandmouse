@@ -46,8 +46,8 @@ export function formatSeconds(us: number): string {
 }
 
 /** 执行中 Esc 始终可用，用户也可配置额外的停止键。 */
-export function stopKeyNames(vk: number): string {
-    return vk === 0x1b ? "Esc" : `Esc / ${vkName(vk)}`;
+export function stopKeyNames(vk: number, available: boolean): string {
+    return !available || vk === 0x1b ? "Esc" : `Esc / ${vkName(vk)}`;
 }
 
 const VK_NAMES = new Map<number, string>([

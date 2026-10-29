@@ -45,6 +45,7 @@ struct ThreadState {
     keyboard_hook: Option<HHOOK>,
     execution_active: bool,
     stop_vk: u32,
+    stop_hotkey_available: bool,
     mouse_hook: Option<HHOOK>,
     swallow_left_up: bool,
     buffer: Option<Arc<Mutex<RecordingBuffer>>>,
@@ -57,6 +58,7 @@ thread_local! {
         keyboard_hook: None,
         execution_active: false,
         stop_vk: 0x78,
+        stop_hotkey_available: false,
         mouse_hook: None,
         swallow_left_up: false,
         buffer: None,
@@ -67,10 +69,34 @@ thread_local! {
 
 pub struct InputServiceHandle {
     thread_id: u32,
-    hotkeys_ready: Arc<AtomicBool>,
+    hotkeys_available: Arc<HotkeyAvailability>,
     queue: Arc<Mutex<VecDeque<ServiceCommand>>>,
     status: Arc<Mutex<Vec<String>>>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+#[derive(Default)]
+struct HotkeyAvailability {
+    record: AtomicBool,
+    stop: AtomicBool,
+}
+
+impl HotkeyAvailability {
+    fn update(&self, record: bool, stop: bool) {
+        self.record.store(record, Ordering::SeqCst);
+        self.stop.store(stop, Ordering::SeqCst);
+    }
+
+    fn registered_vks(&self, hotkeys: &crate::capture::Hotkeys) -> Vec<u32> {
+        let mut keys = Vec::with_capacity(2);
+        if self.record.load(Ordering::SeqCst) {
+            keys.push(hotkeys.record_vk);
+        }
+        if self.stop.load(Ordering::SeqCst) {
+            keys.push(hotkeys.stop_vk);
+        }
+        keys
+    }
 }
 
 impl InputServiceHandle {
@@ -107,19 +133,27 @@ impl InputServiceHandle {
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| "更新快捷键超时")?
     }
+    pub fn initialize_hotkeys(&self, hotkeys: crate::capture::Hotkeys) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.send_cmd(ServiceCommand::InitializeHotkeys(hotkeys, tx))?;
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "初始化快捷键超时")?
+    }
+    pub fn record_hotkey_available(&self) -> bool {
+        self.hotkeys_available.record.load(Ordering::SeqCst)
+    }
+    pub fn stop_hotkey_available(&self) -> bool {
+        self.hotkeys_available.stop.load(Ordering::SeqCst)
+    }
+    pub fn registered_hotkey_vks(&self, hotkeys: &crate::capture::Hotkeys) -> Vec<u32> {
+        self.hotkeys_available.registered_vks(hotkeys)
+    }
 
     pub fn arm_execution(&self, active: bool) -> Result<(), String> {
         let (tx, rx) = mpsc::channel();
         self.send_cmd(ServiceCommand::ArmExecution(active, tx))?;
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| "启用原生停止监听超时")?
-    }
-    pub fn ensure_stop_available(&self) -> Result<(), String> {
-        if self.hotkeys_ready.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err("全局停止快捷键未注册，请先在帮助菜单中更换未被占用的快捷键".into())
-        }
     }
     pub fn status_lines(&self) -> Vec<String> {
         self.status.lock().unwrap().clone()
@@ -147,8 +181,8 @@ pub fn start_input_service(
 ) -> Result<InputServiceHandle, String> {
     let queue = Arc::new(Mutex::new(VecDeque::<ServiceCommand>::new()));
     let status = Arc::new(Mutex::new(Vec::<String>::new()));
-    let hotkeys_ready = Arc::new(AtomicBool::new(false));
-    let ready_for_thread = hotkeys_ready.clone();
+    let hotkeys_available = Arc::new(HotkeyAvailability::default());
+    let ready_for_thread = hotkeys_available.clone();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
 
     let queue_for_thread = queue.clone();
@@ -173,7 +207,7 @@ pub fn start_input_service(
 
     Ok(InputServiceHandle {
         thread_id,
-        hotkeys_ready,
+        hotkeys_available,
         queue,
         status,
         join: Mutex::new(Some(join)),
@@ -185,7 +219,7 @@ fn service_thread_main(
     queue: Arc<Mutex<VecDeque<ServiceCommand>>>,
     status: Arc<Mutex<Vec<String>>>,
     ready_tx: mpsc::Sender<Result<u32, String>>,
-    hotkeys_ready: Arc<AtomicBool>,
+    hotkeys_available: Arc<HotkeyAvailability>,
 ) {
     let _environment = match super::environment::EnvironmentWatch::new(on_hotkey.clone()) {
         Ok(watch) => watch,
@@ -205,33 +239,12 @@ fn service_thread_main(
     unsafe {
         let tid = GetCurrentThreadId();
         // 注册全局热键；冲突时记录原因并继续运行（界面按钮始终是主入口）。
-        {
-            let mut st = status.lock().unwrap();
-            let mut registered = 0;
-            match RegisterHotKey(None, HOTKEY_ID_TOGGLE_RECORD, MOD_NOREPEAT, VK_F8 as u32) {
-                Ok(()) => {
-                    registered += 1;
-                    st.push("F8 启停录制：已注册（全局生效）".into());
-                }
-                Err(e) => st.push(format!(
-                    "F8 启停录制：注册失败（{e}），可能被其他程序占用；可继续使用界面按钮"
-                )),
-            }
-            match RegisterHotKey(None, HOTKEY_ID_STOP_EXEC, MOD_NOREPEAT, VK_F9 as u32) {
-                Ok(()) => {
-                    registered += 1;
-                    st.push("F9 停止执行：已注册（全局生效）".into());
-                }
-                Err(e) => st.push(format!(
-                    "F9 停止执行：注册失败（{e}），可能被其他程序占用；可继续使用界面按钮"
-                )),
-            }
-            hotkeys_ready.store(registered == 2, Ordering::SeqCst);
-        }
+        let mut hotkeys = crate::capture::Hotkeys::default();
+        register_hotkeys_independently(&hotkeys, &hotkeys_available, &status);
+        sync_stop_listener(&hotkeys, &hotkeys_available);
 
         let _ = ready_tx.send(Ok(tid));
 
-        let mut hotkeys = crate::capture::Hotkeys::default();
         let mut msg = MSG::default();
         let mut expected_shutdown = false;
         'main: loop {
@@ -281,17 +294,22 @@ fn service_thread_main(
                             stop_capture_hooks();
                             let _ = reply.send(Ok(()));
                         }
+                        ServiceCommand::InitializeHotkeys(next, reply) => {
+                            let result = next.validate().map(|()| {
+                                unregister_hotkeys();
+                                register_hotkeys_independently(&next, &hotkeys_available, &status);
+                                hotkeys = next;
+                                sync_stop_listener(&hotkeys, &hotkeys_available);
+                            });
+                            let _ = reply.send(result);
+                        }
                         ServiceCommand::SetHotkeys(next, reply) => {
-                            let result = configure_hotkeys(&hotkeys, &next, &hotkeys_ready);
+                            let result =
+                                configure_hotkeys(&hotkeys, &next, &hotkeys_available, &status);
                             if result.is_ok() {
                                 hotkeys = next;
-                                STATE.with(|s| s.borrow_mut().stop_vk = hotkeys.stop_vk);
-                                *status.lock().unwrap() = vec![format!(
-                                    "{} 启停录制；{} 停止执行",
-                                    crate::event::vk_name(hotkeys.record_vk),
-                                    crate::event::vk_name(hotkeys.stop_vk)
-                                )];
                             }
+                            sync_stop_listener(&hotkeys, &hotkeys_available);
                             let _ = reply.send(result);
                         }
                         ServiceCommand::ArmExecution(active, reply) => {
@@ -332,7 +350,7 @@ fn service_thread_main(
             }
         }
 
-        hotkeys_ready.store(false, Ordering::SeqCst);
+        hotkeys_available.update(false, false);
         if !expected_shutdown && let Some(callback) = STATE.with(|s| s.borrow().on_hotkey.clone()) {
             callback(HotkeyAction::EnvironmentChanged);
         }
@@ -497,9 +515,9 @@ pub(crate) fn is_injected_by_repeat(extra_info: usize) -> bool {
     extra_info == super::REPEAT_INJECT_MARKER
 }
 
-fn is_physical_stop_key(kind: &EventKind, flags: u32, stop_vk: u32) -> bool {
+fn is_physical_stop_key(kind: &EventKind, flags: u32, stop_vk: u32, stop_available: bool) -> bool {
     flags & LLKHF_INJECTED.0 == 0
-        && matches!(kind, EventKind::KeyDown { vk, .. } if *vk == stop_vk || *vk == 0x1B)
+        && matches!(kind, EventKind::KeyDown { vk, .. } if *vk == 0x1B || (stop_available && *vk == stop_vk))
 }
 
 fn is_physical_left_down(
@@ -558,8 +576,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
         {
             let (buffer, callback) = STATE.with(|s| {
                 let st = s.borrow();
-                let stop =
-                    st.execution_active && is_physical_stop_key(&kind, info.flags.0, st.stop_vk);
+                let stop = st.execution_active
+                    && is_physical_stop_key(
+                        &kind,
+                        info.flags.0,
+                        st.stop_vk,
+                        st.stop_hotkey_available,
+                    );
                 (
                     st.buffer.clone(),
                     if stop { st.on_hotkey.clone() } else { None },
@@ -636,32 +659,86 @@ unsafe extern "system" fn low_level_mouse_proc(
     }
 }
 
-fn configure_hotkeys(
-    old: &crate::capture::Hotkeys,
-    next: &crate::capture::Hotkeys,
-    ready: &AtomicBool,
-) -> Result<(), String> {
-    next.validate()?;
-    ready.store(false, Ordering::SeqCst);
+fn sync_stop_listener(hotkeys: &crate::capture::Hotkeys, available: &HotkeyAvailability) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        st.stop_vk = hotkeys.stop_vk;
+        st.stop_hotkey_available = available.stop.load(Ordering::SeqCst);
+    });
+}
+
+fn hotkey_status_lines(hotkeys: &crate::capture::Hotkeys, record: bool, stop: bool) -> Vec<String> {
+    let state = |available| {
+        if available {
+            "已注册"
+        } else {
+            "注册失败，可能被其他程序占用"
+        }
+    };
+    vec![
+        format!(
+            "{} 启停录制：{}",
+            crate::event::vk_name(hotkeys.record_vk),
+            state(record)
+        ),
+        format!(
+            "{} 停止执行：{}",
+            crate::event::vk_name(hotkeys.stop_vk),
+            state(stop)
+        ),
+    ]
+}
+
+fn unregister_hotkeys() {
     unsafe {
         let _ = UnregisterHotKey(None, HOTKEY_ID_TOGGLE_RECORD);
         let _ = UnregisterHotKey(None, HOTKEY_ID_STOP_EXEC);
+    }
+}
+
+fn register_hotkeys_independently(
+    hotkeys: &crate::capture::Hotkeys,
+    available: &HotkeyAvailability,
+    status: &Mutex<Vec<String>>,
+) {
+    let (record, stop) = unsafe {
+        (
+            RegisterHotKey(
+                None,
+                HOTKEY_ID_TOGGLE_RECORD,
+                MOD_NOREPEAT,
+                hotkeys.record_vk,
+            )
+            .is_ok(),
+            RegisterHotKey(None, HOTKEY_ID_STOP_EXEC, MOD_NOREPEAT, hotkeys.stop_vk).is_ok(),
+        )
+    };
+    available.update(record, stop);
+    *status.lock().unwrap() = hotkey_status_lines(hotkeys, record, stop);
+}
+
+fn configure_hotkeys(
+    old: &crate::capture::Hotkeys,
+    next: &crate::capture::Hotkeys,
+    available: &HotkeyAvailability,
+    status: &Mutex<Vec<String>>,
+) -> Result<(), String> {
+    next.validate()?;
+    available.update(false, false);
+    unregister_hotkeys();
+    unsafe {
         let result = RegisterHotKey(None, HOTKEY_ID_TOGGLE_RECORD, MOD_NOREPEAT, next.record_vk)
             .and_then(|_| RegisterHotKey(None, HOTKEY_ID_STOP_EXEC, MOD_NOREPEAT, next.stop_vk));
         if let Err(error) = result {
-            let _ = UnregisterHotKey(None, HOTKEY_ID_TOGGLE_RECORD);
-            let _ = UnregisterHotKey(None, HOTKEY_ID_STOP_EXEC);
-            let record_ok =
-                RegisterHotKey(None, HOTKEY_ID_TOGGLE_RECORD, MOD_NOREPEAT, old.record_vk).is_ok();
-            let stop_ok =
-                RegisterHotKey(None, HOTKEY_ID_STOP_EXEC, MOD_NOREPEAT, old.stop_vk).is_ok();
-            ready.store(record_ok && stop_ok, Ordering::SeqCst);
+            unregister_hotkeys();
+            register_hotkeys_independently(old, available, status);
             return Err(format!(
                 "快捷键被占用，设置未保存：{error}。请换用其他快捷键"
             ));
         }
     }
-    ready.store(true, Ordering::SeqCst);
+    available.update(true, true);
+    *status.lock().unwrap() = hotkey_status_lines(next, true, true);
     Ok(())
 }
 
@@ -669,6 +746,30 @@ fn configure_hotkeys(
 mod stop_control_tests {
     use super::*;
     use crate::platform::StopRegion;
+
+    #[test]
+    fn conflicting_hotkeys_are_reported_and_not_filtered_from_recording() {
+        let hotkeys = crate::capture::Hotkeys::default();
+        let availability = HotkeyAvailability::default();
+        availability.update(false, true);
+        assert_eq!(availability.registered_vks(&hotkeys), vec![hotkeys.stop_vk]);
+        let status = hotkey_status_lines(&hotkeys, false, true);
+        assert!(status[0].contains("F8") && status[0].contains("注册失败"));
+        assert!(status[1].contains("F9") && status[1].contains("已注册"));
+        let mut filter = crate::capture::CaptureFilter::new(availability.registered_vks(&hotkeys));
+        let key = |vk| EventKind::KeyDown {
+            vk,
+            scan: 0,
+            extended: false,
+        };
+        assert!(filter.should_record(&key(hotkeys.record_vk)));
+        assert!(!filter.should_record(&key(hotkeys.stop_vk)));
+        availability.update(true, false);
+        assert_eq!(
+            availability.registered_vks(&hotkeys),
+            vec![hotkeys.record_vk]
+        );
+    }
 
     #[test]
     fn recording_overlay_stop_is_bound_to_capture() {
@@ -758,14 +859,16 @@ mod stop_control_tests {
             scan: 1,
             extended: false,
         };
-        assert!(is_physical_stop_key(&key, 0, 0x78));
-        assert!(!is_physical_stop_key(&key, LLKHF_INJECTED.0, 0x78));
+        assert!(is_physical_stop_key(&key, 0, 0x78, true));
+        assert!(is_physical_stop_key(&key, 0, 0x78, false));
+        assert!(!is_physical_stop_key(&key, LLKHF_INJECTED.0, 0x78, true));
         let f9 = EventKind::KeyDown {
             vk: 0x78,
             scan: 0,
             extended: false,
         };
-        assert!(is_physical_stop_key(&f9, 0, 0x78));
-        assert!(!is_physical_stop_key(&f9, LLKHF_INJECTED.0, 0x78));
+        assert!(is_physical_stop_key(&f9, 0, 0x78, true));
+        assert!(!is_physical_stop_key(&f9, 0, 0x78, false));
+        assert!(!is_physical_stop_key(&f9, LLKHF_INJECTED.0, 0x78, true));
     }
 }

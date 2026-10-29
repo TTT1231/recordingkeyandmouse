@@ -136,6 +136,8 @@ pub struct SessionSnapshot {
     pub has_execution_report: bool,
     pub last_error: Option<String>,
     pub hotkey_status: Vec<String>,
+    pub record_hotkey_available: bool,
+    pub stop_hotkey_available: bool,
     pub hotkeys: Hotkeys,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -234,7 +236,7 @@ impl AppSession {
             }
         };
         let config = self.inner.lock().unwrap().hotkeys.clone();
-        if let Err(reason) = handle.set_hotkeys(config) {
+        if let Err(reason) = handle.initialize_hotkeys(config) {
             self.inner.lock().unwrap().last_error = Some(reason);
         }
         self.service.set(handle).map_err(|_| "输入服务已经初始化")?;
@@ -380,7 +382,9 @@ impl AppSession {
             return Err("请先重试保存或放弃上次未保存的录制".into());
         }
         let geometry = platform::snapshot_geometry();
-        let buffer = Arc::new(Mutex::new(RecordingBuffer::new(st.hotkeys.vks())));
+        let buffer = Arc::new(Mutex::new(RecordingBuffer::new(
+            self.input_service()?.registered_hotkey_vks(&st.hotkeys),
+        )));
         buffer.lock().unwrap().begin();
         let capture_id = self.input_service()?.start_capture(buffer.clone())?;
         st.mode = Mode::Recording(RecordingLive {
@@ -645,10 +649,16 @@ impl AppSession {
         hotkeys.validate()?;
         let mut st = self.inner.lock().unwrap();
         st.ensure_idle()?;
-        self.input_service()?.set_hotkeys(hotkeys.clone())?;
+        if let Err(reason) = self.input_service()?.set_hotkeys(hotkeys.clone()) {
+            drop(st);
+            self.emit_state(app);
+            return Err(reason);
+        }
         let json = serde_json::to_string(&hotkeys).map_err(|_| "快捷键配置无效")?;
         if let Err(reason) = st.store.set_setting("hotkeys", &json) {
-            let _ = self.input_service()?.set_hotkeys(st.hotkeys.clone());
+            let _ = self.input_service()?.initialize_hotkeys(st.hotkeys.clone());
+            drop(st);
+            self.emit_state(app);
             return Err(reason);
         }
         st.hotkeys = hotkeys;
@@ -705,7 +715,6 @@ impl AppSession {
             if st.demo.is_some() {
                 return Err("演示只支持预览，不能执行到系统".into());
             }
-            self.input_service()?.ensure_stop_available()?;
             let mut events = st.current.compile_for_execution()?;
             let scale_time = |time: i64| scale_execution_time(time, quarters as u8);
             for event in &mut events {
@@ -915,6 +924,14 @@ impl AppSession {
                 .get()
                 .map(|s| s.status_lines())
                 .unwrap_or_default(),
+            record_hotkey_available: self
+                .service
+                .get()
+                .is_some_and(|service| service.record_hotkey_available()),
+            stop_hotkey_available: self
+                .service
+                .get()
+                .is_some_and(|service| service.stop_hotkey_available()),
             hotkeys: st.hotkeys.clone(),
             can_undo: history.is_some_and(|h| !h.past.is_empty()),
             can_redo: history.is_some_and(|h| !h.future.is_empty()),

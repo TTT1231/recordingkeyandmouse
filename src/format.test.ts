@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { describeEvent, formatDurationUs, formatTimelineTick, vkName, wheelSteps } from "./format";
+import { describeEvent, formatDurationUs, formatTimelineTick, stopKeyNames, vkName, wheelSteps } from "./format";
+
+describe("执行停止提示", () => {
+    it("只显示可用的停止快捷键", () => {
+        expect(stopKeyNames(0x78, true)).toBe("Esc / F9");
+        expect(stopKeyNames(0x78, false)).toBe("Esc");
+    });
+});
 
 describe("formatDurationUs", () => {
     it("短时间显示毫秒", () => {

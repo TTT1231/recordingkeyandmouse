@@ -148,7 +148,11 @@ export function TaskToolbar(p: Props) {
                             type="button"
                             className="button primary"
                             disabled={p.busy || executing || p.snapshot.hasPendingRecording}
-                            title={`${vkName(p.snapshot.hotkeys.recordVk)} 启停录制`}
+                            title={
+                                p.snapshot.recordHotkeyAvailable
+                                    ? `${vkName(p.snapshot.hotkeys.recordVk)} 启停录制`
+                                    : "录制快捷键不可用，请使用按钮或在帮助菜单更换快捷键"
+                            }
                             onClick={p.onStartRecording}
                             onKeyDown={e => {
                                 if (e.key === "Enter" || e.key === " ") e.preventDefault();
@@ -169,7 +173,7 @@ export function TaskToolbar(p: Props) {
                                 {executing ? (
                                     <span className="button stop" role="status">
                                         <Icon name="pause" />
-                                        {stopKeyNames(p.snapshot.hotkeys.stopVk)} 停止
+                                        {stopKeyNames(p.snapshot.hotkeys.stopVk, p.snapshot.stopHotkeyAvailable)} 停止
                                     </span>
                                 ) : (
                                     <button

@@ -171,6 +171,8 @@ export function ReferenceDialog(p: {
 }
 export function ShortcutsDialog(p: {
     hotkeys: Hotkeys;
+    recordHotkeyAvailable: boolean;
+    stopHotkeyAvailable: boolean;
     busy: boolean;
     error: string | null;
     onClose: () => void;
@@ -210,6 +212,16 @@ export function ShortcutsDialog(p: {
                         ))}
                     </select>
                 </label>
+                {!p.recordHotkeyAvailable && (
+                    <p className="form-error" role="status">
+                        录制快捷键不可用，请选择未被占用的快捷键；也可使用录制按钮。
+                    </p>
+                )}
+                {!p.stopHotkeyAvailable && (
+                    <p className="form-error" role="status">
+                        系统执行停止快捷键不可用。执行时可按 Esc 或点击停止按钮，也可在此更换快捷键。
+                    </p>
+                )}
                 <p className="field-help">两个快捷键应不同。若已被其他应用占用，会保留原设置并提示。</p>
                 <div className="shortcut-list">
                     <div>

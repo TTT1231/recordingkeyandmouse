@@ -46,6 +46,10 @@ pub enum ServiceCommand {
     ),
     StopCapture,
     StopCaptureChecked(std::sync::mpsc::Sender<Result<(), String>>),
+    InitializeHotkeys(
+        crate::capture::Hotkeys,
+        std::sync::mpsc::Sender<Result<(), String>>,
+    ),
     SetHotkeys(
         crate::capture::Hotkeys,
         std::sync::mpsc::Sender<Result<(), String>>,

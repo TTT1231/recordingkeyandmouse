@@ -18,11 +18,11 @@ const RULER = 28,
     WAIT_HEIGHT = 32,
     LANE_GAP = 10,
     PAD = 8,
-    MUTED = "#616b70",
+    MUTED = "#46565d",
     ACCENT = "#1b6c80",
     RECORD = "#df5457",
-    RIBBON_LINE = "#8eb5bf",
-    RIBBON_BG = "#cde3e9",
+    RIBBON_LINE = "#699ca9",
+    RIBBON_BG = "#cbe2e8",
     FIGURES = '"IBM Plex Sans","Segoe UI",sans-serif';
 interface Props {
     hidden?: boolean;
@@ -221,12 +221,12 @@ export function Timeline(p: Props) {
                 break;
             }
         }
-        ctx.font = `12px ${FIGURES}`;
+        ctx.font = `500 13px ${FIGURES}`;
         for (const t of timelineTickTimes(start, span, displayDurationUs, step)) {
             const x = xOf(t);
             if (x < 0 || x > width) continue;
             const minor = Math.abs(t / step - Math.round(t / step)) > 0.01;
-            ctx.fillStyle = minor ? "#e4e8ea" : "#cfd5d8";
+            ctx.fillStyle = minor ? "#becbd0" : "#879aa2";
             ctx.beginPath();
             ctx.arc(Math.max(1.2, Math.min(width - 1.2, x)), RULER - 5, minor ? 1.2 : 1.7, 0, Math.PI * 2);
             ctx.fill();
@@ -258,7 +258,7 @@ export function Timeline(p: Props) {
             ctx.fillStyle = RIBBON_BG;
             ctx.strokeStyle =
                 selected && selected.startUs >= segment.start && selected.startUs < segment.end ? ACCENT : RIBBON_LINE;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 1 / scaleX;
             roundRect(ctx, left, top, right - left, RECORDING_HEIGHT, 6);
             ctx.fill();
             ctx.stroke();
@@ -268,37 +268,49 @@ export function Timeline(p: Props) {
             const right = snapEdgeX(Math.min(width - PAD, xOf(action.endUs)));
             if (right <= left) continue;
             const waitTop = snapEdgeY(laneTop(1) + (LANE_BASE - WAIT_HEIGHT) / 2);
-            ctx.fillStyle = "#f5f1e8";
-            ctx.strokeStyle = action.id === p.selectedId ? "#796342" : "#d8cdb7";
-            ctx.lineWidth = 1;
+            ctx.fillStyle = "#f5efe3";
+            ctx.strokeStyle = action.id === p.selectedId ? "#70532c" : "#baa580";
+            ctx.lineWidth = 1 / scaleX;
             roundRect(ctx, left, waitTop, right - left, WAIT_HEIGHT, 5);
             ctx.fill();
             ctx.stroke();
-            if (right - left > 64) {
-                ctx.fillStyle = "#796342";
-                ctx.font = `12px ${FIGURES}`;
+            ctx.font = `500 13px ${FIGURES}`;
+            const text = formatSeconds(action.endUs - action.startUs);
+            if (right - left >= ctx.measureText(text).width + 10) {
+                ctx.fillStyle = "#70532c";
                 ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
-                const text = formatSeconds(action.endUs - action.startUs);
                 ctx.fillText(
                     text,
                     snapX((left + right) / 2 - ctx.measureText(text).width / 2),
                     snapY(waitTop + WAIT_HEIGHT / 2),
                 );
                 ctx.textBaseline = "alphabetic";
+            } else if (right - left >= 16) {
+                // 无法容纳时长时仍显示等待图标；完整时长可通过悬停查看。
+                const centerX = snapEdgeX((left + right) / 2);
+                const centerY = snapEdgeY(waitTop + WAIT_HEIGHT / 2);
+                ctx.strokeStyle = "#70532c";
+                ctx.lineWidth = 1 / scaleX;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 4, 0, Math.PI * 2);
+                ctx.moveTo(centerX, centerY - 2.5);
+                ctx.lineTo(centerX, centerY);
+                ctx.lineTo(centerX + 2, centerY + 1);
+                ctx.stroke();
             }
         }
         const bottom = height;
         // 结束标记与播放头。
         if (displayDurationUs > 0 && endX >= 0 && endX <= width) {
             ctx.strokeStyle = RIBBON_LINE;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 1 / scaleX;
             ctx.beginPath();
             ctx.moveTo(snapEdgeX(endX), RULER - 4);
             ctx.lineTo(snapEdgeX(endX), bottom);
             ctx.stroke();
             ctx.fillStyle = MUTED;
-            ctx.font = `12px ${FIGURES}`;
+            ctx.font = `500 13px ${FIGURES}`;
             ctx.textAlign = "left";
             const endLabel = "结束";
             ctx.fillText(
@@ -310,7 +322,7 @@ export function Timeline(p: Props) {
         const head = xOf(p.timeUs);
         if (head >= 0 && head <= width) {
             ctx.strokeStyle = RECORD;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 1 / scaleX;
             ctx.beginPath();
             ctx.moveTo(snapEdgeX(head), RULER - 9);
             ctx.lineTo(snapEdgeX(head), height - 1);
@@ -487,6 +499,11 @@ export function Timeline(p: Props) {
                         onPointerMove={e => {
                             const drag = dragging.current;
                             if (!drag) {
+                                const hovered = hit(e.clientX, e.clientY).action;
+                                e.currentTarget.title =
+                                    hovered?.kind.type === "wait"
+                                        ? `等待 ${formatSeconds(hovered.endUs - hovered.startUs)}`
+                                        : "";
                                 const resize = !p.disabled && !!waitEdgeAt(e.clientX, e.clientY);
                                 setResizeHover(resize);
                                 setHeadHover(!p.disabled && !resize && isPlayheadAt(e.clientX));

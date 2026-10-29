@@ -23,6 +23,8 @@ cargo test native_click_highlight_pixels_and_passthrough -- --ignored --nocaptur
 
 实际 Tauri 状态条验收使用同文件中的 `native_tauri_overlay_injected_click_receiver`：先启动前端开发服务器，将 `REPEAT_E2E_EXECUTABLE` 设为已编译的 Repeat 可执行文件绝对路径，再单独运行该 ignored 测试并按提示在隔离实例中以默认 1x、单次执行启动任务。启动后等待测试结束，避免切换窗口影响接收器焦点。测试检查准备阶段无边框、执行时蓝框可见，以及固定输入穿透状态条。设置 `REPEAT_E2E_PHYSICAL_STOP=1` 可改测真人停止及 Ctrl 释放；结束后还原环境变量。测试只使用 `target/` 下的隔离数据，不读取用户任务。
 
+设置 `REPEAT_E2E_HOTKEY_CONFLICT=1` 可改测录制快捷键冲突：测试线程占用 F8，隔离实例仍应完成固定输入；测试结束后释放快捷键。该模式记录蓝框像素结果，但不以此作为通过条件；与真人停止和动效观察模式分别运行。证据写入 `target/tauri-hotkey-conflict-evidence.json`。
+
 需要观察执行扫光时，可设置 `REPEAT_E2E_OBSERVE_SECONDS=15`，让固定任务在执行状态多停留一段时间；观察完成并等测试结束后还原变量。该选项不能与真人停止模式同时使用。本机实际窗口的屏幕顶部文字扫光已由操作者目视确认。
 
 录制停止验收入口为 `cargo test --test native_recording_overlay native_recording_overlay_stop_preserves_prior_click -- --ignored --nocapture --test-threads=1`，同样需前端开发服务器和 `REPEAT_E2E_EXECUTABLE`；在隔离实例中开始录制，点击一次空白处，再移动到状态条并点击停止。测试核对先前点击成对保留、停止点击未录入、原始轨迹及回放中的末尾移动均保留。设置 `REPEAT_E2E_MAIN_STOP=1` 改测主窗口按钮；设置 `REPEAT_E2E_HOTKEY_STOP=1` 改测快捷键停止：点击空白处后移动鼠标，再按 F10；测试同样核对末尾移动保留。不要同时设置两个变量；结束后还原环境变量。
@@ -66,7 +68,7 @@ try {
 
 测试自动生成证据到 `src-tauri/target/`：`native-contract-evidence.json`、`keys-edit-evidence.json`、`app-execution-evidence.json`，UIPI 用例生成 `uipi-evidence.json`。状态条穿透的 Win32 替身窗口固定样本写入 `overlay-injection-evidence.json`：停止区域内的注入点击到达底层接收器，注入 Esc 和配置停止键未触发停止回调。实际 Tauri 状态条的隔离样本证据写入 `tauri-overlay-injection-evidence.json`：单屏 1920×1080 / 125% 下，准备阶段最初约 0.8 秒未显示边框，执行时蓝色边框像素可见且未取得焦点；停止区域物理坐标 (1112, 973) 的注入点击到达底层接收器，随后收到 F6 down/up，回放继续。`tauri-overlay-physical-stop-evidence.json` 的最近一次样本改为执行期间关闭主窗口：窗口关闭后系统 Ctrl 不再按下，但探针未记录带 Repeat 标记的 Ctrl 抬起事件，需继续核对退出收尾。相同测试重跑会覆盖输出，应将需要留存的固定样本证据附在对应变更或测试归档中，不提交普通用户录制内容。后端还有 `get_execution_report`，当前界面没有报告查看或导出入口。
 
-本机单屏 1920×1080 / 125% 的录制停止真人操作样本分别写入 `recording-overlay-evidence.json`、`recording-main-stop-evidence.json` 和 `recording-hotkey-evidence.json`：三种停止方式均保留末尾移动，鼠标停止按钮的点击不参与录制。主窗口快速双击样本中，普通点击保留，停止位置点击未录入，回放输入配对完整；第二次点击未完整进入录制，证据写入 `recording-main-race-evidence.json`。`stop-control-interleaved-evidence.json` 记录了通过 Windows 钩子捕获的合成样本：按键抬起发生在停止点击的 down/up 之间，移除停止点击后该按键仍完整配对，其他鼠标移动亦保留；该样本不代表真人界面操作。`left-edge-hook-evidence.json` 记录了向左的固定注入移动：低级钩子报告屏幕左侧外 2 像素时，系统光标仍位于左边缘；它不能证明真实物理鼠标的所有行为。`edge-replay-evidence.json` 记录了边缘越界移动的执行副本映射、实际二维光标位置和接收窗口的按键按下／抬起，原始记录未改变。`click-highlight-evidence.json` 记录了蓝色圆环像素、透明中心及角落、穿透到专用接收器的鼠标 down/up，以及提示关闭后像素恢复。
+本机单屏 1920×1080 / 125% 的录制停止真人操作样本分别写入 `recording-overlay-evidence.json`、`recording-main-stop-evidence.json` 和 `recording-hotkey-evidence.json`：三种停止方式均保留末尾移动，鼠标停止按钮的点击不参与录制。主窗口快速双击样本中，普通点击保留，停止位置点击未录入，回放输入配对完整；第二次点击未完整进入录制，证据写入 `recording-main-race-evidence.json`。`tauri-hotkey-conflict-evidence.json` 的固定样本中，F8 被测试线程占用时，隔离实例执行并向接收器送达完整鼠标及 F6 按下／抬起；用户另行反馈冲突状态下真人停止实测通过，未提供事件级证据。`stop-control-interleaved-evidence.json` 记录了通过 Windows 钩子捕获的合成样本：按键抬起发生在停止点击的 down/up 之间，移除停止点击后该按键仍完整配对，其他鼠标移动亦保留；该样本不代表真人界面操作。`left-edge-hook-evidence.json` 记录了向左的固定注入移动：低级钩子报告屏幕左侧外 2 像素时，系统光标仍位于左边缘；它不能证明真实物理鼠标的所有行为。`edge-replay-evidence.json` 记录了边缘越界移动的执行副本映射、实际二维光标位置和接收窗口的按键按下／抬起，原始记录未改变。`click-highlight-evidence.json` 记录了蓝色圆环像素、透明中心及角落、穿透到专用接收器的鼠标 down/up，以及提示关闭后像素恢复。
 
 内部计时参考目标是空载 P95 ≤ 5 ms、P99 ≤ 15 ms，三分钟首末误差差值绝对值 ≤ 20 ms，原生停止观察 P95 ≤ 50 ms；它们用于比较回归，不是用户验收门槛或所有环境的性能承诺。
 
@@ -88,7 +90,7 @@ try {
 
 平台目标为 Windows 10+ x64；Linux X11 的后续目标环境为 Ubuntu 24.04 LTS / Xorg，Wayland 单独验证。开发和验收状态集中在本节维护。
 
-已有历史证据来自 Windows 10 22H2 x64、本地单屏 1920×1080 / 125% 环境：短混合输入、三分钟移动与停顿、应用三轮执行、明确文本、停止收尾、键盘编辑与真实分辨率切换取消。这些是特定样本的记录，不等于当前版本全量验收；时间线和部分工作区交互也有实际窗口操作记录。时间线 canvas 的文字行起点与 1px 描边已对齐设备像素网格，并经实机窗口（PrintWindow 抓图加像素聚类指标）复核：色块边框锐利、文字位置正确；12px 中灰刻度文字残留的柔和属该字号颜色的栅格化地板而非位置缺陷，徽章文字同路径但尚未在带等待数据的窗口实测。
+已有历史证据来自 Windows 10 22H2 x64、本地单屏 1920×1080 / 125% 环境：短混合输入、三分钟移动与停顿、应用三轮执行、明确文本、停止收尾、键盘编辑与真实分辨率切换取消。这些是特定样本的记录，不等于当前版本全量验收；时间线和部分工作区交互也有实际窗口操作记录。时间线使用设备像素网格对齐文字和细线；旧样式曾在实机窗口通过抓图核对，新样式的文字和边框已由操作者在演示窗口目视确认，窄等待标记尚待实机核对。
 
 以下事项尚缺完整验证记录，或仍未实现：
 

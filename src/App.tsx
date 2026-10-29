@@ -568,7 +568,7 @@ export default function App() {
                     {mode === "preparing" && (
                         <div className="executing-notice" role="status">
                             将在 {Math.max(1, Math.ceil((session.executionLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
-                            秒后执行；{stopKeyNames(session.hotkeys.stopVk)} 可取消。
+                            秒后执行；{stopKeyNames(session.hotkeys.stopVk, session.stopHotkeyAvailable)} 可取消。
                         </div>
                     )}
                     {mode === "executing" && session.executionLive && (
@@ -660,7 +660,14 @@ export default function App() {
                 <Modal title="开始录制" onClose={closeDialog}>
                     <div className="dialog-body">
                         <p className="dialog-lead">
-                            像平常一样操作，按 <kbd className="keycap">{vkName(session.hotkeys.recordVk)}</kbd> 停止。
+                            {session.recordHotkeyAvailable ? (
+                                <>
+                                    像平常一样操作，按 <kbd className="keycap">{vkName(session.hotkeys.recordVk)}</kbd>{" "}
+                                    或点击停止按钮结束录制。
+                                </>
+                            ) : (
+                                <>录制快捷键暂不可用，请点击停止按钮结束录制。可在帮助菜单的快捷键设置中更换快捷键。</>
+                            )}
                         </p>
                         {document.actions.length > 0 && <p className="form-note">本次录制将替换现有录制。</p>}
                         {error && (
@@ -758,6 +765,8 @@ export default function App() {
             {dialog?.type === "shortcuts" && (
                 <ShortcutsDialog
                     hotkeys={session.hotkeys}
+                    recordHotkeyAvailable={session.recordHotkeyAvailable}
+                    stopHotkeyAvailable={session.stopHotkeyAvailable}
                     busy={locked}
                     error={error}
                     onClose={closeDialog}

@@ -33,6 +33,7 @@ export function ReplayOverlay() {
 
     const live = snapshot?.executionLive;
     const recording = snapshot?.mode === "recording";
+    const recordHotkeyAvailable = snapshot?.recordHotkeyAvailable === true;
     const preparing = snapshot?.mode === "preparing";
     const executing = snapshot?.mode === "executing";
     const stopping = live?.stopRequested ?? false;
@@ -71,9 +72,11 @@ export function ReplayOverlay() {
                 <span className="replay-overlay-line replay-overlay-secondary">
                     <span>
                         {recording
-                            ? vkName(snapshot?.hotkeys.recordVk ?? 0x77)
-                            : stopKeyNames(snapshot?.hotkeys.stopVk ?? 0x78)}{" "}
-                        停止{!recording && live?.speed && live.speed !== 1 ? ` · ${live.speed}x` : ""}
+                            ? recordHotkeyAvailable
+                                ? `${vkName(snapshot?.hotkeys.recordVk ?? 0x77)} 停止`
+                                : "点击停止"
+                            : `${stopKeyNames(snapshot?.hotkeys.stopVk ?? 0x78, snapshot?.stopHotkeyAvailable === true)} 停止`}
+                        {!recording && live?.speed && live.speed !== 1 ? ` · ${live.speed}x` : ""}
                     </span>
                     <span className="replay-overlay-time">
                         {formatTimelineTick(
@@ -86,9 +89,11 @@ export function ReplayOverlay() {
             <span
                 className="replay-overlay-stop"
                 aria-label={
-                    recording
+                    recording && recordHotkeyAvailable
                         ? `停止录制，或按 ${vkName(snapshot?.hotkeys.recordVk ?? 0x77)}`
-                        : `停止执行，或按 ${stopKeyNames(snapshot?.hotkeys.stopVk ?? 0x78)}`
+                        : recording
+                          ? "停止录制"
+                          : `停止执行，或按 ${stopKeyNames(snapshot?.hotkeys.stopVk ?? 0x78, snapshot?.stopHotkeyAvailable === true)}`
                 }
             >
                 <span />

@@ -23,11 +23,20 @@ impl InputServiceHandle {
     pub fn set_hotkeys(&self, _hotkeys: crate::capture::Hotkeys) -> Result<(), String> {
         Err("当前平台不能注册全局快捷键".into())
     }
+    pub fn initialize_hotkeys(&self, _hotkeys: crate::capture::Hotkeys) -> Result<(), String> {
+        Err("当前平台不能注册全局快捷键".into())
+    }
+    pub fn record_hotkey_available(&self) -> bool {
+        false
+    }
+    pub fn stop_hotkey_available(&self) -> bool {
+        false
+    }
+    pub fn registered_hotkey_vks(&self, _hotkeys: &crate::capture::Hotkeys) -> Vec<u32> {
+        Vec::new()
+    }
     pub fn arm_execution(&self, _active: bool) -> Result<(), String> {
         Err("当前平台未提供停止监听".into())
-    }
-    pub fn ensure_stop_available(&self) -> Result<(), String> {
-        Err("当前平台不能注册全局停止快捷键".into())
     }
     pub fn shutdown(&self) {}
     pub fn status_lines(&self) -> Vec<String> {

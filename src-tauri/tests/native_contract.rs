@@ -818,7 +818,6 @@ fn native_capture_edit_save_replay_contract() {
             stop_vk: 0x76,
         })
         .unwrap();
-    service.ensure_stop_available().unwrap();
     let app_db = std::env::var_os("REPEAT_VERIFY_APP_DB");
     let mut app_capture = AppCaptureGuard(app_db.is_some());
     if app_capture.0 {
@@ -2355,13 +2354,43 @@ fn native_tauri_overlay_injected_click_receiver() {
     doc.validate_execution().unwrap();
     let mut store = Store::open(&data_dir.join("tasks.sqlite3")).unwrap();
     store.insert(&doc).unwrap();
-    // Keep the isolated instance independent of a user's running Repeat.
+    // The conflict mode holds F8 on the test thread before launching the isolated app.
+    // Ordinary runs use separate keys to stay independent of a running Repeat.
+    let conflict = std::env::var_os("REPEAT_E2E_HOTKEY_CONFLICT").is_some();
+    assert!(
+        !conflict || (!physical_stop && observe_seconds == 0),
+        "请分别运行快捷键冲突、真人停止和动效观察"
+    );
+    struct HotkeyGuard(bool);
+    impl Drop for HotkeyGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+                unsafe {
+                    let _ = UnregisterHotKey(None, 0x6231);
+                }
+            }
+        }
+    }
+    let _occupied_f8 = if conflict {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey};
+        unsafe {
+            RegisterHotKey(None, 0x6231, MOD_NOREPEAT, 0x77).expect("无法为冲突验收占用 F8");
+        }
+        HotkeyGuard(true)
+    } else {
+        HotkeyGuard(false)
+    };
     store
         .set_setting(
             "hotkeys",
-            &serde_json::to_string(&Hotkeys {
-                record_vk: 0x79,
-                stop_vk: 0x7a,
+            &serde_json::to_string(&if conflict {
+                Hotkeys::default()
+            } else {
+                Hotkeys {
+                    record_vk: 0x79,
+                    stop_vk: 0x7a,
+                }
             })
             .unwrap(),
         )
@@ -2513,7 +2542,9 @@ fn native_tauri_overlay_injected_click_receiver() {
         thread::sleep(Duration::from_millis(10));
     };
     unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, dc) };
-    assert!(blue, "屏幕顶部未绘制期望的蓝色边框");
+    if !conflict {
+        assert!(blue, "屏幕顶部未绘制期望的蓝色边框");
+    }
     // Re-establish the receiver after execution starts: starting the task in
     // Repeat (or switching windows during the countdown) can take focus back.
     unsafe {
@@ -2605,9 +2636,12 @@ fn native_tauri_overlay_injected_click_receiver() {
             _ => "WM_KEYUP",
         })
         .collect();
-    let evidence = serde_json::json!({"fixture":"real Tauri replay-overlay and isolated fixed task", "dataDir":data_dir, "preparationWithoutFrameMs":preparation_without_frame_ms, "executionFrameBlue":blue, "receiverFocused":receiver_focused, "receiverAtClickPoint":receiver_hit, "overlayRect":{"left":overlay_rect.left,"top":overlay_rect.top,"right":overlay_rect.right,"bottom":overlay_rect.bottom}, "injectedAt":{"x":x,"y":y}, "receiverEvents":relevant.iter().map(|m| serde_json::json!({"message":match m.msg { WM_LBUTTONDOWN => "WM_LBUTTONDOWN", WM_LBUTTONUP => "WM_LBUTTONUP", WM_KEYDOWN => "WM_KEYDOWN", _ => "WM_KEYUP" }, "value":m.value,"clientX":m.x,"clientY":m.y})).collect::<Vec<_>>()});
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/tauri-overlay-injection-evidence.json");
+    let evidence = serde_json::json!({"fixture":"real Tauri replay-overlay and isolated fixed task", "recordHotkeyOccupied":conflict, "dataDir":data_dir, "preparationWithoutFrameMs":preparation_without_frame_ms, "executionFrameBlue":blue, "receiverFocused":receiver_focused, "receiverAtClickPoint":receiver_hit, "overlayRect":{"left":overlay_rect.left,"top":overlay_rect.top,"right":overlay_rect.right,"bottom":overlay_rect.bottom}, "injectedAt":{"x":x,"y":y}, "receiverEvents":relevant.iter().map(|m| serde_json::json!({"message":match m.msg { WM_LBUTTONDOWN => "WM_LBUTTONDOWN", WM_LBUTTONUP => "WM_LBUTTONUP", WM_KEYDOWN => "WM_KEYDOWN", _ => "WM_KEYUP" }, "value":m.value,"clientX":m.x,"clientY":m.y})).collect::<Vec<_>>()});
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if conflict {
+        "target/tauri-hotkey-conflict-evidence.json"
+    } else {
+        "target/tauri-overlay-injection-evidence.json"
+    });
     std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     let _ = child.process.kill();
     let _ = child.process.wait();
