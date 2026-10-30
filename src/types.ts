@@ -54,6 +54,22 @@ export interface ReferenceImage {
     height: number;
     mapping: ImageMapping;
 }
+export interface ScreenTimeSpan {
+    startUs: number;
+    endUs: number;
+    sourceStartUs: number;
+    sourceEndUs: number;
+}
+export interface ScreenRecording {
+    id: string;
+    /** The captured desktop rectangle in physical pixels, independent of encoded resolution. */
+    width: number;
+    height: number;
+    originX: number;
+    originY: number;
+    durationUs: number;
+    spans: ScreenTimeSpan[];
+}
 export interface DocumentView {
     taskId: string;
     name: string;
@@ -65,6 +81,7 @@ export interface DocumentView {
     actions: ActionView[];
     rawEventCount: number;
     referenceImage: ReferenceImage | null;
+    screenRecording?: ScreenRecording | null;
 }
 export type RecordingView = DocumentView;
 export interface TaskSummary {
@@ -79,12 +96,12 @@ export interface Hotkeys {
     stopVk: number;
 }
 export interface SessionSnapshot {
-    mode: "idle" | "recording" | "preparing" | "executing";
+    mode: "idle" | "preparingRecording" | "recording" | "preparing" | "executing";
     taskId: string;
     revision: number;
     version: number;
     hasRecording: boolean;
-    recordingLive: { elapsedUs: number; eventCount: number } | null;
+    recordingLive: { elapsedUs: number; eventCount: number; prepareRemainingMs: number } | null;
     executionLive: {
         roundsRequested: number;
         currentRound: number;

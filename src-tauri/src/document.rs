@@ -225,6 +225,221 @@ pub struct ReferenceImage {
     pub height: u32,
     pub mapping: ImageMapping,
 }
+
+/// A piece of the edited timeline mapped to the unchanged captured video.
+/// A frozen span has equal source endpoints. A zero-length final span retains
+/// the final source frame when an interval is shortened to zero.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeSpan {
+    pub start_us: i64,
+    pub end_us: i64,
+    pub source_start_us: i64,
+    pub source_end_us: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenRecording {
+    pub id: String,
+    /// Physical desktop dimensions, independent of encoded video resolution.
+    pub width: u32,
+    pub height: u32,
+    pub origin_x: i32,
+    pub origin_y: i32,
+    /// Original captured duration; edits only change the spans' timeline times.
+    pub duration_us: i64,
+    pub spans: Vec<ScreenTimeSpan>,
+}
+
+impl ScreenTimeSpan {
+    fn source_at(&self, time_us: i64) -> i64 {
+        let duration = self.end_us - self.start_us;
+        if duration == 0 {
+            return self.source_end_us;
+        }
+        self.source_start_us
+            + scale_time(
+                time_us.clamp(self.start_us, self.end_us) - self.start_us,
+                self.source_end_us - self.source_start_us,
+                duration,
+            )
+    }
+
+    fn clipped(&self, start_us: i64, end_us: i64) -> Option<Self> {
+        let start_us = self.start_us.max(start_us);
+        let end_us = self.end_us.min(end_us);
+        (start_us < end_us).then(|| Self {
+            start_us,
+            end_us,
+            source_start_us: self.source_at(start_us),
+            source_end_us: self.source_at(end_us),
+        })
+    }
+}
+
+/// Integer interpolation keeps microsecond endpoints stable across long files.
+fn scale_time(offset: i64, target_length: i64, source_length: i64) -> i64 {
+    ((i128::from(offset) * i128::from(target_length) + i128::from(source_length) / 2)
+        / i128::from(source_length)) as i64
+}
+
+impl ScreenRecording {
+    pub fn new(
+        id: String,
+        width: u32,
+        height: u32,
+        origin_x: i32,
+        origin_y: i32,
+        duration_us: i64,
+    ) -> Self {
+        Self {
+            id,
+            width,
+            height,
+            origin_x,
+            origin_y,
+            duration_us,
+            spans: vec![ScreenTimeSpan {
+                start_us: 0,
+                end_us: duration_us,
+                source_start_us: 0,
+                source_end_us: duration_us,
+            }],
+        }
+    }
+
+    pub fn source_time_us(&self, time_us: i64) -> i64 {
+        self.spans
+            .iter()
+            .find(|span| time_us < span.end_us)
+            .map(|span| span.source_at(time_us))
+            .or_else(|| self.spans.last().map(|span| span.source_end_us))
+            .unwrap_or(0)
+    }
+
+    pub fn validate(&self, edited_duration_us: i64) -> Result<(), String> {
+        // The view sends relative microseconds to JavaScript, so reject values
+        // which cannot be represented exactly there.
+        const MAX_SAFE_TIME_US: i64 = 9_007_199_254_740_991;
+        if self.id.is_empty()
+            || !self
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || self.width == 0
+            || self.height == 0
+            || !(0..=MAX_SAFE_TIME_US).contains(&self.duration_us)
+            || !(0..=MAX_SAFE_TIME_US).contains(&edited_duration_us)
+            || self.spans.is_empty()
+        {
+            return Err("录制画面信息无效".into());
+        }
+        let mut previous_end = 0;
+        let mut previous_source = 0;
+        for (index, span) in self.spans.iter().enumerate() {
+            let final_point = index + 1 == self.spans.len()
+                && span.end_us == edited_duration_us
+                && span.source_start_us == span.source_end_us;
+            if span.start_us != previous_end
+                || span.end_us < span.start_us
+                || (span.end_us == span.start_us && !final_point)
+                || span.source_start_us < previous_source
+                || span.source_end_us < span.source_start_us
+                || span.source_end_us > self.duration_us
+            {
+                return Err("录制画面的时间映射无效".into());
+            }
+            previous_end = span.end_us;
+            previous_source = span.source_end_us;
+        }
+        if previous_end != edited_duration_us || previous_source != self.duration_us {
+            return Err("录制画面与任务的时间范围不一致".into());
+        }
+        Ok(())
+    }
+
+    fn retime(&mut self, start_us: i64, old_length: i64, new_length: i64) -> Result<(), String> {
+        let total = self.spans.last().map(|span| span.end_us).unwrap_or(0);
+        self.validate(total)?;
+        let old_end = add_time(start_us, old_length)?;
+        if start_us < 0 || old_length < 0 || new_length < 0 || old_end > total {
+            return Err("录制画面的编辑区间无效".into());
+        }
+        let delta = new_length - old_length;
+        let new_total = add_time(total, delta)?;
+        let mut next = Vec::new();
+        for span in &self.spans {
+            if let Some(prefix) = span.clipped(0, start_us) {
+                next.push(prefix);
+            }
+        }
+        if old_length == 0 && new_length > 0 {
+            let source = self.source_time_us(start_us);
+            next.push(ScreenTimeSpan {
+                start_us,
+                end_us: add_time(start_us, new_length)?,
+                source_start_us: source,
+                source_end_us: source,
+            });
+        } else if new_length > 0 {
+            for span in &self.spans {
+                if let Some(mut middle) = span.clipped(start_us, old_end) {
+                    middle.start_us = add_time(
+                        start_us,
+                        scale_time(middle.start_us - start_us, new_length, old_length),
+                    )?;
+                    middle.end_us = add_time(
+                        start_us,
+                        scale_time(middle.end_us - start_us, new_length, old_length),
+                    )?;
+                    if middle.start_us < middle.end_us {
+                        next.push(middle);
+                    }
+                }
+            }
+        }
+        for span in &self.spans {
+            if let Some(mut suffix) = span.clipped(old_end, total) {
+                suffix.start_us = add_time(suffix.start_us, delta)?;
+                suffix.end_us = add_time(suffix.end_us, delta)?;
+                next.push(suffix);
+            }
+        }
+        if next
+            .last()
+            .is_none_or(|span| span.source_end_us != self.duration_us)
+        {
+            next.push(ScreenTimeSpan {
+                start_us: new_total,
+                end_us: new_total,
+                source_start_us: self.duration_us,
+                source_end_us: self.duration_us,
+            });
+        }
+        let mut merged: Vec<ScreenTimeSpan> = Vec::new();
+        for span in next {
+            if let Some(previous) = merged.last_mut()
+                && previous.end_us == span.start_us
+                && previous.source_end_us == span.source_start_us
+                && previous.end_us > previous.start_us
+                && span.end_us > span.start_us
+                && i128::from(previous.source_end_us - previous.source_start_us)
+                    * i128::from(span.end_us - span.start_us)
+                    == i128::from(span.source_end_us - span.source_start_us)
+                        * i128::from(previous.end_us - previous.start_us)
+            {
+                previous.end_us = span.end_us;
+                previous.source_end_us = span.source_end_us;
+            } else {
+                merged.push(span);
+            }
+        }
+        self.spans = merged;
+        self.validate(new_total)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDocument {
@@ -238,6 +453,8 @@ pub struct TaskDocument {
     pub geometry: DesktopGeometry,
     pub layout_klid: String,
     pub reference_image: Option<ReferenceImage>,
+    #[serde(default)]
+    pub screen_recording: Option<ScreenRecording>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -261,6 +478,7 @@ pub struct DocumentView {
     pub actions: Vec<ActionView>,
     pub raw_event_count: usize,
     pub reference_image: Option<ReferenceImage>,
+    pub screen_recording: Option<ScreenRecording>,
 }
 impl TaskDocument {
     pub fn new(name: String, geometry: DesktopGeometry, layout_klid: String) -> Self {
@@ -275,6 +493,7 @@ impl TaskDocument {
             geometry,
             layout_klid,
             reference_image: None,
+            screen_recording: None,
         }
     }
     pub fn replace_recording(&mut self, raw: RawRecording) {
@@ -284,6 +503,7 @@ impl TaskDocument {
         self.layout_klid = raw.layout_klid.clone();
         self.raw = Some(raw);
         self.reference_image = None;
+        self.screen_recording = None;
     }
     pub fn summary(&self) -> TaskSummary {
         TaskSummary {
@@ -318,6 +538,7 @@ impl TaskDocument {
             actions: self.actions.iter().map(Action::view).collect(),
             raw_event_count: self.raw.as_ref().map(|r| r.events.len()).unwrap_or(0),
             reference_image: self.reference_image.clone(),
+            screen_recording: self.screen_recording.clone(),
         }
     }
     pub fn validate_execution(&self) -> Result<(), String> {
@@ -461,6 +682,9 @@ impl TaskDocument {
             } => {
                 positive_duration(duration_us)?;
                 let t = self.boundary(&after_action)?;
+                if let Some(screen) = &mut self.screen_recording {
+                    screen.retime(t, 0, duration_us)?;
+                }
                 self.shift_after(t, duration_us, None, None)?;
                 self.actions.push(Action {
                     id: new_id(),
@@ -496,6 +720,13 @@ impl TaskDocument {
                 let old_end = self.actions[i].end_us;
                 let delta = duration_us - (old_end - self.actions[i].start_us);
                 self.closed_boundary_at(old_end, Some(0))?;
+                if let Some(screen) = &mut self.screen_recording {
+                    screen.retime(
+                        self.actions[i].start_us,
+                        old_end - self.actions[i].start_us,
+                        duration_us,
+                    )?;
+                }
                 self.shift_after(old_end, delta, Some(&action_id), Some(0))?;
                 self.actions[i].end_us = add_time(self.actions[i].start_us, duration_us)?;
             }
@@ -515,6 +746,9 @@ impl TaskDocument {
                         return Err("等待区间内还有其他动作，不能删除".into());
                     }
                     // 等待是用户插入的空档：删除后让后续动作整体提前，原停顿保留。
+                    if let Some(screen) = &mut self.screen_recording {
+                        screen.retime(action.start_us, wait_duration, 0)?;
+                    }
                     self.actions.remove(i);
                     self.shift_after(action.end_us, -wait_duration, None, Some(0))?;
                 } else {
@@ -555,6 +789,9 @@ impl TaskDocument {
                             })
                     }) {
                         return Err("移动期间有其他动作，不能单独修改这段耗时".into());
+                    }
+                    if let Some(screen) = &mut self.screen_recording {
+                        screen.retime(start, old_len, duration_us)?;
                     }
                     self.shift_after(end, duration_us - old_len, Some(&action_id), Some(last_seq))?;
                 }
@@ -828,6 +1065,9 @@ impl TaskDocument {
             if let Some((x, y)) = event.kind.position() {
                 self.check_point(x, y)?;
             }
+        }
+        if let Some(screen) = &self.screen_recording {
+            screen.validate(self.duration_us)?;
         }
         Ok(())
     }

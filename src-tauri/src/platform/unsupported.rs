@@ -38,6 +38,12 @@ impl InputServiceHandle {
     pub fn arm_execution(&self, _active: bool) -> Result<(), String> {
         Err("当前平台未提供停止监听".into())
     }
+    pub fn prepare_recording(
+        &self,
+        _preparation: Option<super::RecordingPreparation>,
+    ) -> Result<(), String> {
+        Err("当前平台不能录制系统输入".into())
+    }
     pub fn shutdown(&self) {}
     pub fn status_lines(&self) -> Vec<String> {
         vec!["当前平台输入后端未验证".into()]

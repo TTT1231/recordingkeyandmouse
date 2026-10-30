@@ -13,13 +13,13 @@ html.replay-overlay-window #root {
     display: flex;
     align-items: center;
     gap: 9px;
-    width: 300px;
-    height: 52px;
+    width: 100%;
+    height: 100%;
     padding: 0 52px 0 16px;
     overflow: hidden;
-    color: #f4f7fc;
-    background: rgba(15, 23, 42, 0.94);
-    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: var(--ink, #202729);
+    background: var(--surface, #fff);
+    border: 1px solid var(--control, #cfd5d8);
     border-radius: 26px;
     font:
         13px/1 "Microsoft YaHei UI",
@@ -31,20 +31,18 @@ html.replay-overlay-window #root {
 
 .replay-overlay-dot {
     flex: none;
-    width: 9px;
-    height: 9px;
-    background: #60a5fa;
+    width: 8px;
+    height: 8px;
+    background: var(--accent, #1b6c80);
     border-radius: 50%;
-    box-shadow: 0 0 9px rgba(96, 165, 250, 0.65);
 }
 
 .replay-overlay-recording .replay-overlay-dot {
-    background: #f87171;
-    box-shadow: 0 0 9px rgba(248, 113, 113, 0.65);
+    background: var(--record, #df5457);
 }
 
-.replay-overlay-recording .replay-overlay-label {
-    color: #fca5a5;
+.replay-overlay-preparing-recording .replay-overlay-dot {
+    background: var(--wait-ink, #796342);
 }
 
 .replay-overlay-details {
@@ -61,38 +59,15 @@ html.replay-overlay-window #root {
     min-width: 0;
 }
 .replay-overlay-label {
-    color: #a9d2ff;
     font-weight: 600;
-}
-.replay-overlay-active {
-    background: linear-gradient(100deg, #a9d2ff 30%, #fff 48%, #a9d2ff 62%);
-    background-size: 220% 100%;
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: overlay-sweep 2.8s linear infinite;
-}
-@keyframes overlay-sweep {
-    from {
-        background-position: 100% 0;
-    }
-    to {
-        background-position: -100% 0;
-    }
-}
-@media (prefers-reduced-motion: reduce) {
-    .replay-overlay-active {
-        animation: none;
-        -webkit-text-fill-color: #a9d2ff;
-    }
 }
 .replay-overlay-round {
     overflow: hidden;
-    color: #dce8f6;
+    color: var(--muted, #616b70);
     text-overflow: ellipsis;
 }
 .replay-overlay-secondary {
-    color: #aebccc;
+    color: var(--muted, #616b70);
     font-size: 11px;
 }
 .replay-overlay-time {
@@ -107,13 +82,14 @@ html.replay-overlay-window #root {
     place-items: center;
     width: 40px;
     height: 40px;
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--frame, #f2f3f4);
+    border: 1px solid var(--line, #e8ebed);
     border-radius: 50%;
 }
 
 .replay-overlay-stop span {
     width: 10px;
     height: 10px;
-    background: #fff;
+    background: var(--ink, #202729);
     border-radius: 2px;
 }

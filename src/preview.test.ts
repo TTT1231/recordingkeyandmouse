@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RecordedEvent } from "./types";
-import { advance, createCursor, seek } from "./preview";
+import { advance, createCursor, previewPointerPosition, seek } from "./preview";
 
 function ev(seq: number, timeUs: number, kind: RecordedEvent["kind"]): RecordedEvent {
     return { seq, timeUs, nativeTimeMs: 0, kind };
@@ -57,5 +57,34 @@ describe("预览游标", () => {
         const indexAfterFirst = c.index;
         seek(c, events, 1_000_000);
         expect(c.index).toBe(indexAfterFirst);
+    });
+
+    it("演示在稀疏移动样本之间平滑显示，原始位置和事件保持不变", () => {
+        const moves = [
+            ev(1, 0, { kind: "mouseMove", x: 0, y: 20 }),
+            ev(2, 100_000, { kind: "mouseMove", x: 100, y: 60 }),
+        ];
+        const c = createCursor();
+        seek(c, moves, 25_000);
+        expect(previewPointerPosition(c, moves, true)).toEqual({ x: 25, y: 30 });
+        expect(previewPointerPosition(c, moves)).toEqual({ x: 0, y: 20 });
+        expect(c.index).toBe(1);
+        expect(moves[0].kind).toEqual({ kind: "mouseMove", x: 0, y: 20 });
+        seek(c, moves, 100_000);
+        expect(previewPointerPosition(c, moves, true)).toEqual({ x: 100, y: 60 });
+        seek(c, moves, 50_000);
+        expect(previewPointerPosition(c, moves, true)).toEqual({ x: 50, y: 40 });
+    });
+
+    it("平滑显示不越过点击或键盘事件，也不提前显示第一个位置", () => {
+        const c = createCursor();
+        expect(previewPointerPosition(c, events, true)).toBeNull();
+        seek(c, events, 250_000);
+        expect(previewPointerPosition(c, events, true)).toEqual({ x: 100, y: 100 });
+        seek(c, events, 1_900_000);
+        expect(previewPointerPosition(c, events, true)).toEqual({ x: 200, y: 150 });
+        expect(c.buttonsDown.size).toBe(0);
+        seek(c, events, 2_050_000);
+        expect(c.buttonsDown.has("left")).toBe(true);
     });
 });

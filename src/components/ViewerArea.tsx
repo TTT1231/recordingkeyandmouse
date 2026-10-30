@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { desktopBounds } from "../actions";
 import { formatClock, vkName } from "../format";
-import { createCursor, seek } from "../preview";
+import { createCursor, previewPointerPosition, seek } from "../preview";
 import { SPEEDS } from "../speed";
 import type { ActionView, DocumentView } from "../types";
 import { Icon } from "./Icon";
+import { RecordedScreen } from "./RecordedScreen";
 interface Props {
     recording: DocumentView;
     rows: ActionView[];
@@ -64,106 +65,114 @@ function demoFrame(rows: ActionView[], timeUs: number) {
     }
     return { fields, focus, saved, submitted };
 }
-function DemoScreen({
-    rows,
-    timeUs,
-    playing,
-    scale,
-}: {
-    rows: ActionView[];
-    timeUs: number;
-    playing: boolean;
-    scale: number;
-}) {
-    const frame = useMemo(() => demoFrame(rows, timeUs), [rows, timeUs]);
-    const [values, setValues] = useState(frame.fields);
-    const [focus, setFocus] = useState(frame.focus);
-    const [saved, setSaved] = useState(frame.saved);
-    const [submitted, setSubmitted] = useState(frame.submitted);
-    useEffect(() => {
-        setValues(frame.fields);
-        setFocus(frame.focus);
-        setSaved(frame.saved);
-        setSubmitted(frame.submitted);
-    }, [frame]);
-    const update = (index: number, value: string) => {
-        setValues(current => current.map((item, i) => (i === index ? value : item)));
-    };
-    return (
-        <div className="demo-screen" aria-hidden="true" style={{ "--scene-scale": scale } as CSSProperties}>
-            <div className="practice-window">
-                <div className="practice-titlebar">
-                    <Icon name="folder" size={22} />
-                    <span>练习用表单</span>
-                    <span className="practice-window-control">—　□　×</span>
-                </div>
-                <div className="practice-content">
-                    <div className="practice-heading">
-                        <h3>新建联系人</h3>
-                        <span>{submitted ? "已提交" : saved ? "已保存" : "草稿"}</span>
+const DemoScreen = memo(
+    function DemoScreen({
+        frame,
+        playing,
+        scale,
+    }: {
+        frame: ReturnType<typeof demoFrame>;
+        resetKey: string;
+        playing: boolean;
+        scale: number;
+    }) {
+        const [values, setValues] = useState(frame.fields);
+        const [focus, setFocus] = useState(frame.focus);
+        const [saved, setSaved] = useState(frame.saved);
+        const [submitted, setSubmitted] = useState(frame.submitted);
+        useEffect(() => {
+            setValues(frame.fields);
+            setFocus(frame.focus);
+            setSaved(frame.saved);
+            setSubmitted(frame.submitted);
+        }, [frame]);
+        const update = (index: number, value: string) => {
+            setValues(current => current.map((item, i) => (i === index ? value : item)));
+        };
+        return (
+            <div className="demo-screen" aria-hidden="true" style={{ "--scene-scale": scale } as CSSProperties}>
+                <div className="practice-window">
+                    <div className="practice-titlebar">
+                        <Icon name="folder" size={22} />
+                        <span>练习用表单</span>
+                        <span className="practice-window-control">—　□　×</span>
                     </div>
-                    <label className="practice-label name-label" htmlFor="practice-name">
-                        姓名
-                    </label>
-                    <input
-                        className={`practice-input name-input${focus === 0 && !submitted ? " replay-focus" : ""}`}
-                        id="practice-name"
-                        placeholder="请输入姓名"
-                        autoComplete="off"
-                        value={values[0]}
-                        readOnly={playing}
-                        onChange={e => update(0, e.target.value)}
-                    />
-                    <label className="practice-label phone-label" htmlFor="practice-phone">
-                        联系电话
-                    </label>
-                    <input
-                        className={`practice-input phone-input${focus === 1 && !submitted ? " replay-focus" : ""}`}
-                        id="practice-phone"
-                        placeholder="请输入联系电话"
-                        autoComplete="off"
-                        value={values[1]}
-                        readOnly={playing}
-                        onChange={e => update(1, e.target.value)}
-                    />
-                    <label className="practice-label company-label" htmlFor="practice-company">
-                        公司
-                    </label>
-                    <input
-                        className={`practice-input company-input${focus === 2 && !submitted ? " replay-focus" : ""}`}
-                        id="practice-company"
-                        placeholder="选填"
-                        autoComplete="off"
-                        value={values[2]}
-                        readOnly={playing}
-                        onChange={e => update(2, e.target.value)}
-                    />
-                    <div className="practice-footer">
-                        <span>{saved ? "已保存" : "未保存"}</span>
-                        <button type="button" onClick={() => setSaved(true)}>
-                            保存草稿
-                        </button>
-                        <button
-                            type="button"
-                            className="practice-submit"
-                            onClick={() => {
-                                if (values[0]) setSubmitted(true);
-                            }}
-                        >
-                            提交
-                        </button>
-                    </div>
-                    {submitted && (
-                        <div className="practice-success">
-                            <Icon name="check" size={56} />
-                            <strong>资料已提交</strong>
+                    <div className="practice-content">
+                        <div className="practice-heading">
+                            <h3>新建联系人</h3>
+                            <span>{submitted ? "已提交" : saved ? "已保存" : "草稿"}</span>
                         </div>
-                    )}
+                        <label className="practice-label name-label" htmlFor="practice-name">
+                            姓名
+                        </label>
+                        <input
+                            className={`practice-input name-input${focus === 0 && !submitted ? " replay-focus" : ""}`}
+                            id="practice-name"
+                            placeholder="请输入姓名"
+                            autoComplete="off"
+                            value={values[0]}
+                            readOnly={playing}
+                            onChange={e => update(0, e.target.value)}
+                        />
+                        <label className="practice-label phone-label" htmlFor="practice-phone">
+                            联系电话
+                        </label>
+                        <input
+                            className={`practice-input phone-input${focus === 1 && !submitted ? " replay-focus" : ""}`}
+                            id="practice-phone"
+                            placeholder="请输入联系电话"
+                            autoComplete="off"
+                            value={values[1]}
+                            readOnly={playing}
+                            onChange={e => update(1, e.target.value)}
+                        />
+                        <label className="practice-label company-label" htmlFor="practice-company">
+                            公司
+                        </label>
+                        <input
+                            className={`practice-input company-input${focus === 2 && !submitted ? " replay-focus" : ""}`}
+                            id="practice-company"
+                            placeholder="选填"
+                            autoComplete="off"
+                            value={values[2]}
+                            readOnly={playing}
+                            onChange={e => update(2, e.target.value)}
+                        />
+                        <div className="practice-footer">
+                            <span>{saved ? "已保存" : "未保存"}</span>
+                            <button type="button" onClick={() => setSaved(true)}>
+                                保存草稿
+                            </button>
+                            <button
+                                type="button"
+                                className="practice-submit"
+                                onClick={() => {
+                                    if (values[0]) setSubmitted(true);
+                                }}
+                            >
+                                提交
+                            </button>
+                        </div>
+                        {submitted && (
+                            <div className="practice-success">
+                                <Icon name="check" size={56} />
+                                <strong>资料已提交</strong>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
-        </div>
-    );
-}
+        );
+    },
+    (previous, next) =>
+        previous.resetKey === next.resetKey &&
+        previous.playing === next.playing &&
+        previous.scale === next.scale &&
+        previous.frame.focus === next.frame.focus &&
+        previous.frame.saved === next.frame.saved &&
+        previous.frame.submitted === next.frame.submitted &&
+        previous.frame.fields.every((value, index) => value === next.frame.fields[index]),
+);
 export function ViewerArea(p: Props) {
     const viewportRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -173,6 +182,7 @@ export function ViewerArea(p: Props) {
     timeRef.current = p.timeUs;
     const [size, setSize] = useState({ width: 640, height: 400 });
     const [image, setImage] = useState<HTMLImageElement | null>(null);
+    const screenRecording = p.isDemo ? null : p.recording.screenRecording;
     const bounds = useMemo(() => desktopBounds(p.recording.geometry.monitors), [p.recording.geometry]);
     const mapping = useMemo(() => {
         const scale = Math.min(size.width / bounds.width, size.height / bounds.height);
@@ -191,6 +201,7 @@ export function ViewerArea(p: Props) {
         seek(cursorRef.current, p.recording.events, p.timeUs);
         return cursorRef.current;
     }, [p.recording, p.timeUs]);
+    const demo = useMemo(() => (p.isDemo ? demoFrame(p.rows, p.timeUs) : null), [p.isDemo, p.rows, p.timeUs]);
     useEffect(() => {
         const viewport = viewportRef.current;
         if (!viewport) return;
@@ -215,7 +226,7 @@ export function ViewerArea(p: Props) {
     useEffect(() => {
         let active = true;
         setImage(null);
-        if (p.recording.referenceImage) {
+        if (p.recording.referenceImage && !screenRecording) {
             const next = new Image();
             next.onload = () => {
                 if (active) setImage(next);
@@ -225,7 +236,7 @@ export function ViewerArea(p: Props) {
         return () => {
             active = false;
         };
-    }, [p.recording.referenceImage]);
+    }, [p.recording.referenceImage, screenRecording]);
     useEffect(() => {
         if (!p.playing || p.disabled) return;
         let raf = 0;
@@ -252,9 +263,11 @@ export function ViewerArea(p: Props) {
         canvas.height = Math.max(1, Math.round(size.height * dpr));
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, size.width, size.height);
-        ctx.fillStyle = "#f1f2f3";
-        ctx.fillRect(0, 0, size.width, size.height);
-        if (image && p.recording.referenceImage) {
+        if (!screenRecording) {
+            ctx.fillStyle = "#f1f2f3";
+            ctx.fillRect(0, 0, size.width, size.height);
+        }
+        if (image && p.recording.referenceImage && !screenRecording) {
             const area = p.recording.referenceImage.mapping;
             const ratio = Math.min(area.width / image.width, area.height / image.height);
             const w = image.width * ratio;
@@ -263,7 +276,7 @@ export function ViewerArea(p: Props) {
             const y = mapping.offY + (area.y + (area.height - h) / 2 - bounds.y) * mapping.scale;
             ctx.drawImage(image, x, y, w * mapping.scale, h * mapping.scale);
         }
-    }, [p.recording, bounds, mapping, image, size]);
+    }, [p.recording, bounds, mapping, image, size, screenRecording]);
     const jump = (direction: -1 | 1) => {
         const action =
             direction < 0
@@ -280,11 +293,12 @@ export function ViewerArea(p: Props) {
                   age: (p.timeUs - cursor.lastClick.atUs) / 450_000,
               }
             : null;
+    const position = previewPointerPosition(cursor, p.recording.events, p.isDemo);
     const pointer =
-        cursor.hasPos && !p.picking
+        position && !p.picking
             ? {
-                  x: mapping.offX + (cursor.x - bounds.x) * mapping.scale,
-                  y: mapping.offY + (cursor.y - bounds.y) * mapping.scale,
+                  x: mapping.offX + (position.x - bounds.x) * mapping.scale,
+                  y: mapping.offY + (position.y - bounds.y) * mapping.scale,
               }
             : null;
     const wheel =
@@ -300,11 +314,26 @@ export function ViewerArea(p: Props) {
                             <Icon name="record-ring" size={30} />
                         </span>
                         <h2>还没有录制</h2>
-                        <p>点击右上角的“开始录制”。</p>
+                        <p>点击上方“录制”开始。</p>
                     </div>
                 ) : (
                     <>
                         <div className="screen-canvas" style={{ width: size.width, height: size.height }}>
+                            {screenRecording && (
+                                <RecordedScreen
+                                    key={screenRecording.id}
+                                    recording={screenRecording}
+                                    timeUs={p.timeUs}
+                                    playing={p.playing && !p.disabled}
+                                    speed={p.speed}
+                                    style={{
+                                        left: mapping.offX + (screenRecording.originX - bounds.x) * mapping.scale,
+                                        top: mapping.offY + (screenRecording.originY - bounds.y) * mapping.scale,
+                                        width: screenRecording.width * mapping.scale,
+                                        height: screenRecording.height * mapping.scale,
+                                    }}
+                                />
+                            )}
                             <canvas
                                 ref={canvasRef}
                                 aria-label="回放画布"
@@ -325,10 +354,10 @@ export function ViewerArea(p: Props) {
                                         p.onPick(x, y);
                                 }}
                             />
-                            {p.isDemo && (
+                            {demo && (
                                 <DemoScreen
-                                    rows={p.rows}
-                                    timeUs={p.timeUs}
+                                    frame={demo}
+                                    resetKey={`${p.recording.taskId}:${p.recording.revision}`}
                                     playing={p.playing}
                                     scale={size.width / 1280}
                                 />
@@ -346,7 +375,7 @@ export function ViewerArea(p: Props) {
                             {pointer && (
                                 <span
                                     className={`replay-pointer${cursor.buttonsDown.size ? " pressed" : ""}`}
-                                    style={{ left: pointer.x, top: pointer.y }}
+                                    style={{ transform: `translate3d(${pointer.x - 2}px, ${pointer.y - 1}px, 0)` }}
                                 >
                                     <svg viewBox="0 0 28 34" aria-hidden="true">
                                         <path d="M3 2v24l6-5 5 11 5-2-5-10 9-1L3 2Z" />
@@ -364,16 +393,21 @@ export function ViewerArea(p: Props) {
                             {cursor.textFeedback && p.timeUs - cursor.textAtUs < 700_000 && (
                                 <div className="text-feedback">{cursor.textFeedback}</div>
                             )}
-                            {!p.isDemo && !p.disabled && !p.recording.referenceImage && !p.playing && (
-                                <div className="background-prompt">
-                                    <button type="button" className="background-add" onClick={p.onAddReference}>
-                                        <Icon name="image" size={16} />
-                                        添加预览背景
-                                    </button>
-                                </div>
-                            )}
+                            {!p.isDemo &&
+                                !p.disabled &&
+                                !screenRecording &&
+                                !p.recording.referenceImage &&
+                                !p.playing && (
+                                    <div className="background-prompt">
+                                        <span>此任务没有录制桌面画面</span>
+                                        <button type="button" className="background-add" onClick={p.onAddReference}>
+                                            <Icon name="image" size={16} />
+                                            添加参考图
+                                        </button>
+                                    </div>
+                                )}
                         </div>
-                        {!p.isDemo && p.recording.referenceImage && (
+                        {!p.isDemo && !screenRecording && p.recording.referenceImage && (
                             <div className="viewer-tools">
                                 <button
                                     type="button"

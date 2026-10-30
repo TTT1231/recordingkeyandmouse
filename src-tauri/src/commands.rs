@@ -1,4 +1,6 @@
 //! 具名控制命令；输入热路径和执行序列均留在 Rust。
+//! Commands run off the UI thread: status polling must not block native window
+//! operations while another thread owns the session lock.
 use crate::document::EditRequest;
 use crate::session::{AppSession, ExecutionReportBundle, SessionSnapshot, WorkspaceView};
 use crate::storage::Hotkeys;
@@ -6,15 +8,15 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 type Session<'a> = State<'a, Arc<AppSession>>;
 #[tauri::command]
-pub fn session_status(session: Session<'_>) -> SessionSnapshot {
-    session.snapshot()
+pub async fn session_status(session: Session<'_>) -> Result<SessionSnapshot, String> {
+    Ok(session.snapshot())
 }
 #[tauri::command]
-pub fn get_workspace(session: Session<'_>) -> Result<WorkspaceView, String> {
+pub async fn get_workspace(session: Session<'_>) -> Result<WorkspaceView, String> {
     session.workspace()
 }
 #[tauri::command]
-pub fn start_recording(
+pub async fn start_recording(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -24,7 +26,7 @@ pub fn start_recording(
     Ok(session.snapshot())
 }
 #[tauri::command]
-pub fn stop_recording(
+pub async fn stop_recording(
     app: AppHandle,
     session: Session<'_>,
     gesture: Option<String>,
@@ -33,7 +35,7 @@ pub fn stop_recording(
     session.workspace()
 }
 #[tauri::command]
-pub fn cancel_recording(
+pub async fn cancel_recording(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -43,7 +45,7 @@ pub fn cancel_recording(
     session.workspace()
 }
 #[tauri::command]
-pub fn retry_recording(
+pub async fn retry_recording(
     app: AppHandle,
     session: Session<'_>,
     discard: bool,
@@ -52,7 +54,7 @@ pub fn retry_recording(
     session.workspace()
 }
 #[tauri::command]
-pub fn create_task(
+pub async fn create_task(
     app: AppHandle,
     session: Session<'_>,
     name: String,
@@ -61,7 +63,7 @@ pub fn create_task(
     session.workspace()
 }
 #[tauri::command]
-pub fn select_task(
+pub async fn select_task(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -70,7 +72,7 @@ pub fn select_task(
     session.workspace()
 }
 #[tauri::command]
-pub fn rename_task(
+pub async fn rename_task(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -81,7 +83,7 @@ pub fn rename_task(
     session.workspace()
 }
 #[tauri::command]
-pub fn delete_task(
+pub async fn delete_task(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -91,7 +93,7 @@ pub fn delete_task(
     session.workspace()
 }
 #[tauri::command]
-pub fn edit_task(
+pub async fn edit_task(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -102,7 +104,7 @@ pub fn edit_task(
     session.workspace()
 }
 #[tauri::command]
-pub fn task_history(
+pub async fn task_history(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -113,7 +115,7 @@ pub fn task_history(
     session.workspace()
 }
 #[tauri::command]
-pub fn set_hotkeys(
+pub async fn set_hotkeys(
     app: AppHandle,
     session: Session<'_>,
     hotkeys: Hotkeys,
@@ -122,7 +124,7 @@ pub fn set_hotkeys(
     session.workspace()
 }
 #[tauri::command]
-pub fn demo_mode(
+pub async fn demo_mode(
     app: AppHandle,
     session: Session<'_>,
     enter: bool,
@@ -131,7 +133,7 @@ pub fn demo_mode(
     session.workspace()
 }
 #[tauri::command]
-pub fn start_execution(
+pub async fn start_execution(
     app: AppHandle,
     session: Session<'_>,
     task_id: String,
@@ -143,15 +145,21 @@ pub fn start_execution(
     Ok(session.snapshot())
 }
 #[tauri::command]
-pub fn stop_execution(app: AppHandle, session: Session<'_>) -> Result<SessionSnapshot, String> {
+pub async fn stop_execution(
+    app: AppHandle,
+    session: Session<'_>,
+) -> Result<SessionSnapshot, String> {
     session.stop_execution(&app)?;
     Ok(session.snapshot())
 }
 #[tauri::command]
-pub fn get_execution_report(session: Session<'_>) -> Option<ExecutionReportBundle> {
-    session.report()
+pub async fn get_execution_report(
+    session: Session<'_>,
+) -> Result<Option<ExecutionReportBundle>, String> {
+    Ok(session.report())
 }
 #[tauri::command]
-pub fn clear_error(app: AppHandle, session: Session<'_>) {
+pub async fn clear_error(app: AppHandle, session: Session<'_>) -> Result<(), String> {
     session.clear_error(&app);
+    Ok(())
 }

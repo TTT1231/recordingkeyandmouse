@@ -84,6 +84,7 @@ function RunMode(p: {
 export function TaskToolbar(p: Props) {
     const mode = p.snapshot.mode;
     const recording = mode === "recording";
+    const preparingRecording = mode === "preparingRecording";
     const executing = mode === "executing" || mode === "preparing";
     const demo = p.snapshot.isDemo;
     return (
@@ -109,7 +110,7 @@ export function TaskToolbar(p: Props) {
                     <>
                         <button type="button" className="button primary" disabled title="使用演示中不录制系统键鼠操作">
                             <span className="record-dot" />
-                            开始录制
+                            录制
                         </button>
                         <button
                             type="button"
@@ -121,6 +122,11 @@ export function TaskToolbar(p: Props) {
                             回放
                         </button>
                     </>
+                ) : preparingRecording ? (
+                    <button type="button" className="button stop" disabled={p.busy} onClick={p.onCancelRecording}>
+                        <Icon name="x" />
+                        取消准备
+                    </button>
                 ) : recording ? (
                     <>
                         <button
@@ -165,7 +171,7 @@ export function TaskToolbar(p: Props) {
                             }}
                         >
                             <span className="record-dot" />
-                            开始录制
+                            录制
                         </button>
                         {!p.empty && (
                             <>
@@ -189,7 +195,7 @@ export function TaskToolbar(p: Props) {
                                         onClick={p.onStartExecution}
                                     >
                                         <Icon name="play" />
-                                        执行到系统
+                                        执行
                                     </button>
                                 )}
                             </>
@@ -202,6 +208,10 @@ export function TaskToolbar(p: Props) {
                     <button type="button" className="text-button" onClick={p.onResetDemo}>
                         重置演示
                     </button>
+                ) : preparingRecording ? (
+                    <span className="record-counter" role="status" aria-atomic="true">
+                        准备录制 · {Math.max(1, Math.ceil((p.snapshot.recordingLive?.prepareRemainingMs ?? 0) / 1000))}
+                    </span>
                 ) : recording && p.snapshot.recordingLive ? (
                     <span className="record-counter">{formatClock(p.snapshot.recordingLive.elapsedUs)}</span>
                 ) : !p.empty && !recording && !executing ? (

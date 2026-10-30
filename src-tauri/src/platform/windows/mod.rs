@@ -114,15 +114,29 @@ pub use input_service::start_input_service;
 /// 执行按录制内容原样回放，不检查前台应用；倒计时结束后只检查用户已有按住状态，
 /// 避免物理按键与回放输入混叠。
 pub fn execution_ready() -> Result<(), String> {
+    if input_is_held() {
+        return Err("开始执行前请松开当前按住的键和鼠标，再重试".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn recording_ready() -> Result<(), String> {
+    if input_is_held() {
+        return Err("开始录制前请松开当前按住的键和鼠标，再重试".into());
+    }
+    Ok(())
+}
+
+fn input_is_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     unsafe {
         for vk in 1..=254 {
             if GetAsyncKeyState(vk) < 0 {
-                return Err("开始执行前请松开当前按住的键和鼠标，再重试".into());
+                return true;
             }
         }
     }
-    Ok(())
+    false
 }
 
 pub fn gesture_settings() -> crate::document::GestureSettings {

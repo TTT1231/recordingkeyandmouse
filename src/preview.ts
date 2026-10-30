@@ -37,6 +37,26 @@ export function seek(cursor: PreviewCursor, events: RecordedEvent[], timeUs: num
     if (timeUs < cursor.timeUs) Object.assign(cursor, createCursor());
     advance(cursor, events, timeUs);
 }
+
+/** Smooth sparse demo moves without changing recorded events or input state. */
+export function previewPointerPosition(cursor: PreviewCursor, events: RecordedEvent[], smooth = false) {
+    if (!cursor.hasPos) return null;
+    const current = events[cursor.index - 1];
+    const next = events[cursor.index];
+    if (
+        smooth &&
+        current?.kind.kind === "mouseMove" &&
+        next?.kind.kind === "mouseMove" &&
+        next.timeUs > current.timeUs
+    ) {
+        const fraction = Math.max(0, Math.min(1, (cursor.timeUs - current.timeUs) / (next.timeUs - current.timeUs)));
+        return {
+            x: current.kind.x + (next.kind.x - current.kind.x) * fraction,
+            y: current.kind.y + (next.kind.y - current.kind.y) * fraction,
+        };
+    }
+    return { x: cursor.x, y: cursor.y };
+}
 export function advance(cursor: PreviewCursor, events: RecordedEvent[], timeUs: number): void {
     while (cursor.index < events.length && events[cursor.index].timeUs <= timeUs) {
         applyEvent(cursor, events[cursor.index]);

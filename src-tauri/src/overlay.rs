@@ -57,6 +57,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     .inner_size(300.0, 52.0)
     .resizable(false)
     .decorations(false)
+    // Windows adds a rectangular frame to shadowed, undecorated windows even
+    // when the WebView and the page background are transparent.
+    .shadow(false)
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
@@ -64,6 +67,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     .focusable(false)
     .visible(false)
     .build()?;
+    exclude_from_capture(&window)?;
     window.set_ignore_cursor_events(true)?;
     for (index, _) in crate::platform::snapshot_geometry()
         .monitors
@@ -88,9 +92,25 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             .focusable(false)
             .visible(false)
             .build()?;
+            exclude_from_capture(&border)?;
             border.set_ignore_cursor_events(true)?;
         }
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn exclude_from_capture(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+    let hwnd = windows::Win32::Foundation::HWND(window.hwnd()?.0);
+    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }
+        .map_err(|error| tauri::Error::Anyhow(error.into()))
+}
+
+#[cfg(not(windows))]
+fn exclude_from_capture(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 //! 原生会话：控制、任务事务、编辑修订和可取消的系统执行。
 use crate::capture::RecordingBuffer;
 use crate::document::{
-    DocumentView, EditRequest, RawRecording, TaskDocument, TaskSummary, wall_ms,
+    DocumentView, EditRequest, RawRecording, ScreenRecording, TaskDocument, TaskSummary, wall_ms,
 };
 use crate::event::{EventKind, MouseButton};
 use crate::platform::{self, HotkeyAction};
@@ -11,16 +11,36 @@ use crate::scheduler::{
 };
 use crate::storage::{Hotkeys, Store};
 use serde::Serialize;
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// u32::MAX 是“无限循环”的调度哨兵；只能由停止按钮或停止热键结束。
 pub const INFINITE_ROUNDS: u32 = u32::MAX;
+const RECORDING_PREPARE_DURATION: Duration = Duration::from_secs(3);
+static NEXT_RECORDING_PREPARATION: AtomicU64 = AtomicU64::new(1);
+
+struct RecordingPreparationLive {
+    control: platform::RecordingPreparation,
+    prepare_until: Instant,
+    task_id: String,
+    revision: u64,
+    screen: Option<crate::screen_capture::ScreenCapture>,
+    media_id: String,
+    geometry: crate::geometry::DesktopGeometry,
+}
+
+impl RecordingPreparationLive {
+    fn remaining_ms(&self, now: Instant) -> u64 {
+        self.prepare_until
+            .saturating_duration_since(now)
+            .as_millis() as u64
+    }
+}
 
 struct RecordingLive {
     capture_id: u64,
@@ -30,6 +50,8 @@ struct RecordingLive {
     geometry: crate::geometry::DesktopGeometry,
     layout_klid: String,
     started_at_wall_ms: i64,
+    screen: crate::screen_capture::ScreenCapture,
+    media_id: String,
 }
 #[derive(Default)]
 struct ExecutionProgress {
@@ -48,6 +70,7 @@ struct ExecutionLive {
 }
 enum Mode {
     Idle,
+    PreparingRecording(RecordingPreparationLive),
     Recording(RecordingLive),
     Executing(ExecutionLive),
 }
@@ -110,6 +133,7 @@ impl SessionState {
 pub struct RecordingLiveView {
     pub elapsed_us: i64,
     pub event_count: usize,
+    pub prepare_remaining_ms: u64,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +193,7 @@ pub struct AppSession {
     next_snapshot: AtomicU64,
     execution_stop: Mutex<Option<Arc<StopSignal>>>,
     data_path: String,
+    recording_window_hidden: AtomicBool,
 }
 impl AppSession {
     pub fn new(path: &Path) -> Result<Arc<Self>, String> {
@@ -209,6 +234,7 @@ impl AppSession {
             next_snapshot: AtomicU64::new(1),
             execution_stop: Mutex::new(None),
             data_path: path.display().to_string(),
+            recording_window_hidden: AtomicBool::new(false),
         }))
     }
     pub fn init(self: &Arc<Self>, app: &AppHandle) -> Result<(), String> {
@@ -250,11 +276,14 @@ impl AppSession {
                         match rx.recv_timeout(Duration::from_millis(100)) {
                             Ok(HotkeyAction::EnvironmentChanged) => {
                                 let mut st = session.inner.lock().unwrap();
-                                if matches!(st.mode, Mode::Recording(_)) {
+                                if matches!(st.mode, Mode::Recording(_) | Mode::PreparingRecording(_)) {
+                                    if let Mode::PreparingRecording(live) = &st.mode { live.control.cancel(); }
+                                    let _ = session.input_service().and_then(|s|s.prepare_recording(None));
                                     let _ = session.input_service().and_then(|s|s.stop_capture());
                                     st.mode = Mode::Idle;
                                     st.last_error = Some("桌面会话、显示布局或电源状态发生变化，本次录制未替换原任务".into());
                                     crate::overlay::hide(&app);
+                                    session.restore_recording_workspace(&app);
                                 }
                                 if let Mode::Executing(live)=&st.mode {live.stop.fail("输入服务或桌面环境发生变化，已停止执行");}
                                 drop(st);
@@ -266,7 +295,7 @@ impl AppSession {
                                     (
                                         st.current.id.clone(),
                                         st.current.revision,
-                                        matches!(st.mode, Mode::Recording(_)),
+                                        matches!(st.mode, Mode::Recording(_) | Mode::PreparingRecording(_)),
                                         matches!(st.mode, Mode::Executing(_)),
                                         st.demo.is_some(),
                                     )
@@ -292,10 +321,16 @@ impl AppSession {
                                     session.set_error(&app, reason);
                                 }
                             }
+                            Ok(HotkeyAction::CancelRecordingPreparation(id)) => {
+                                if let Err(reason) = session.cancel_preparation(&app, id) {
+                                    session.set_error(&app, reason);
+                                }
+                            }
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                         session.drain_capture(&app);
+                        session.advance_recording_preparation(&app);
                     }
                 })
                 .map_err(|e| format!("启动控制服务失败：{e}"))?,
@@ -307,6 +342,85 @@ impl AppSession {
             .get()
             .ok_or_else(|| "当前系统输入服务不可用".into())
     }
+
+    fn hide_recording_workspace(&self, app: &AppHandle) -> Result<(), String> {
+        let main = app.get_webview_window("main").ok_or("主窗口不可用")?;
+        main.hide().map_err(|error| error.to_string())?;
+        self.recording_window_hidden.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn restore_recording_workspace(&self, app: &AppHandle) {
+        if self.recording_window_hidden.swap(false, Ordering::SeqCst)
+            && !self.closed.load(Ordering::SeqCst)
+            && let Some(main) = app.get_webview_window("main")
+        {
+            let _ = main.show();
+            let _ = main.unminimize();
+            let _ = main.set_focus();
+        }
+    }
+
+    fn recordings_dir(&self) -> PathBuf {
+        Path::new(&self.data_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("recordings")
+    }
+
+    fn delete_unreferenced_media(
+        &self,
+        st: &SessionState,
+        candidates: &[String],
+    ) -> Result<(), String> {
+        let mut retained = BTreeSet::new();
+        for task in st.store.list()? {
+            if let Some(screen) = st.store.load(&task.id)?.screen_recording {
+                retained.insert(screen.id);
+            }
+        }
+        for doc in st
+            .histories
+            .values()
+            .flat_map(|h| h.past.iter().chain(&h.future))
+            .chain(st.pending.iter())
+        {
+            if let Some(screen) = &doc.screen_recording {
+                retained.insert(screen.id.clone());
+            }
+        }
+        for id in candidates {
+            if !retained.contains(id)
+                && !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                match std::fs::remove_file(self.recordings_dir().join(format!("{id}.mp4"))) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        return Err("任务已更新，但旧录像文件未能清理，请检查录像目录权限".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Only the active document's own media can be opened through the viewer.
+    pub fn recording_media_path(&self, id: &str) -> Result<PathBuf, String> {
+        let st = self.inner.lock().unwrap();
+        if id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || !st
+                .doc()
+                .screen_recording
+                .as_ref()
+                .is_some_and(|media| media.id == id)
+        {
+            return Err("录制画面不可用".into());
+        }
+        Ok(self.recordings_dir().join(format!("{id}.mp4")))
+    }
     pub fn shutdown(&self, app: &AppHandle) {
         self.closed.store(true, Ordering::SeqCst);
         let recording = {
@@ -314,7 +428,7 @@ impl AppSession {
             if let Mode::Executing(live) = &st.mode {
                 live.stop.signal();
             }
-            matches!(st.mode, Mode::Recording(_))
+            matches!(st.mode, Mode::Recording(_) | Mode::PreparingRecording(_))
         };
         if recording {
             let _ = self.stop_recording(app, None);
@@ -328,6 +442,19 @@ impl AppSession {
         if let Some(handle) = self.controller.lock().unwrap().take() {
             let _ = handle.join();
         }
+        let mut st = self.inner.lock().unwrap();
+        let retired: Vec<_> = st
+            .histories
+            .values()
+            .flat_map(|h| h.past.iter().chain(&h.future))
+            .filter_map(|doc| {
+                doc.screen_recording
+                    .as_ref()
+                    .map(|screen| screen.id.clone())
+            })
+            .collect();
+        st.histories.clear();
+        let _ = self.delete_unreferenced_media(&st, &retired);
     }
     fn set_error(&self, app: &AppHandle, reason: String) {
         self.inner.lock().unwrap().last_error = Some(reason);
@@ -344,7 +471,9 @@ impl AppSession {
                 let mut buffer = live.buffer.lock().unwrap();
                 (buffer.drain_pending(), buffer.overflowed())
             };
-            if overflow {
+            if let Some(reason) = live.screen.error() {
+                Some(format!("桌面画面录制失败，原任务已保留。{reason}"))
+            } else if overflow {
                 Some("捕获队列溢出，本次录制不完整，原任务已保留".to_string())
             } else if live.collected.try_reserve(pending.len()).is_err() {
                 Some("内存不足，本次录制未保存，原任务已保留".into())
@@ -362,6 +491,7 @@ impl AppSession {
             st.mode = Mode::Idle;
             st.last_error = Some(reason);
             crate::overlay::hide(app);
+            self.restore_recording_workspace(app);
             drop(st);
             self.emit_state(app);
         }
@@ -375,6 +505,9 @@ impl AppSession {
         let mut st = self.inner.lock().unwrap();
         st.ensure_idle()?;
         st.check(task_id, revision)?;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err("应用正在关闭，不能开始录制".into());
+        }
         if st.demo.is_some() {
             return Err("演示不会录制系统输入，请退出演示后开始录制".into());
         }
@@ -382,11 +515,123 @@ impl AppSession {
             return Err("请先重试保存或放弃上次未保存的录制".into());
         }
         let geometry = platform::snapshot_geometry();
+        let media_id = crate::document::new_id();
+        let folder = self.recordings_dir();
+        std::fs::create_dir_all(&folder).map_err(|error| format!("无法创建录像目录：{error}"))?;
+        let screen = crate::screen_capture::ScreenCapture::prepare(
+            &folder.join(format!("{media_id}.mp4")),
+            &geometry,
+        )?;
+        let control = platform::RecordingPreparation::new(
+            NEXT_RECORDING_PREPARATION.fetch_add(1, Ordering::SeqCst),
+        );
+        self.input_service()?
+            .prepare_recording(Some(control.clone()))?;
+        st.mode = Mode::PreparingRecording(RecordingPreparationLive {
+            control,
+            prepare_until: Instant::now() + RECORDING_PREPARE_DURATION,
+            task_id: task_id.to_owned(),
+            revision,
+            screen: Some(screen),
+            media_id,
+            geometry,
+        });
+        if let Err(reason) =
+            crate::overlay::show_status(app).and_then(|()| self.hide_recording_workspace(app))
+        {
+            let _ = self.input_service()?.prepare_recording(None);
+            st.mode = Mode::Idle;
+            crate::overlay::hide(app);
+            self.restore_recording_workspace(app);
+            return Err(reason);
+        }
+        // Give the user the full preparation interval after the status is visible.
+        if let Mode::PreparingRecording(live) = &mut st.mode {
+            live.prepare_until = Instant::now() + RECORDING_PREPARE_DURATION;
+        }
+        st.last_error = None;
+        drop(st);
+        self.emit_state(app);
+        Ok(())
+    }
+
+    fn cancel_preparation_locked(&self, st: &mut SessionState) -> Result<(), String> {
+        if let Mode::PreparingRecording(live) = &st.mode {
+            live.control.cancel();
+            self.input_service()?.prepare_recording(None)?;
+            st.mode = Mode::Idle;
+            st.last_error = None;
+        }
+        Ok(())
+    }
+
+    fn cancel_preparation(&self, app: &AppHandle, id: u64) -> Result<(), String> {
+        let mut st = self.inner.lock().unwrap();
+        if !matches!(&st.mode, Mode::PreparingRecording(live) if live.control.id == id) {
+            return Ok(());
+        }
+        self.cancel_preparation_locked(&mut st)?;
+        crate::overlay::hide(app);
+        self.restore_recording_workspace(app);
+        drop(st);
+        self.emit_state(app);
+        Ok(())
+    }
+
+    fn advance_recording_preparation(&self, app: &AppHandle) {
+        let mut st = self.inner.lock().unwrap();
+        let Mode::PreparingRecording(preparation) = &st.mode else {
+            return;
+        };
+        let cancelled = preparation.control.is_cancelled() || self.closed.load(Ordering::SeqCst);
+        if !cancelled && Instant::now() < preparation.prepare_until {
+            return;
+        }
+        if cancelled {
+            if let Err(reason) = self.cancel_preparation_locked(&mut st) {
+                st.last_error = Some(reason);
+            }
+            crate::overlay::hide(app);
+            self.restore_recording_workspace(app);
+        } else {
+            let result = st
+                .check(&preparation.task_id, preparation.revision)
+                .and_then(|()| self.begin_recording_locked(app, &mut st));
+            if let Err(reason) = result {
+                let cancelled = matches!(&st.mode, Mode::PreparingRecording(live) if live.control.is_cancelled());
+                let _ = self.input_service().and_then(|s| s.prepare_recording(None));
+                let _ = self.input_service().and_then(|s| s.stop_capture());
+                st.mode = Mode::Idle;
+                st.last_error = if cancelled { None } else { Some(reason) };
+                crate::overlay::hide(app);
+                self.restore_recording_workspace(app);
+            }
+        }
+        drop(st);
+        self.emit_state(app);
+    }
+
+    fn begin_recording_locked(&self, app: &AppHandle, st: &mut SessionState) -> Result<(), String> {
+        // No buffer or recording clock exists during preparation. The native
+        // service checks the cancellation token again when attaching the buffer.
+        crate::overlay::show_recording(app)?;
+        let Mode::PreparingRecording(preparation) = &mut st.mode else {
+            return Err("当前没有录制准备".into());
+        };
+        let geometry = preparation.geometry.clone();
+        if !geometry.same_layout(&platform::snapshot_geometry()) {
+            return Err("准备期间显示器布局发生变化，请重新开始录制".into());
+        }
+        let media_id = preparation.media_id.clone();
+        let screen = preparation.screen.take().ok_or("桌面画面录制未就绪")?;
         let buffer = Arc::new(Mutex::new(RecordingBuffer::new(
             self.input_service()?.registered_hotkey_vks(&st.hotkeys),
         )));
-        buffer.lock().unwrap().begin();
+        let start = Instant::now();
+        let started_at_wall_ms = wall_ms();
+        buffer.lock().unwrap().begin_at(start);
         let capture_id = self.input_service()?.start_capture(buffer.clone())?;
+        screen.start(start)?;
         st.mode = Mode::Recording(RecordingLive {
             capture_id,
             gestures: platform::gesture_settings(),
@@ -394,16 +639,11 @@ impl AppSession {
             collected: Vec::new(),
             geometry,
             layout_klid: platform::current_layout_klid(),
-            started_at_wall_ms: wall_ms(),
+            started_at_wall_ms,
+            screen,
+            media_id,
         });
-        if let Err(reason) = crate::overlay::show_recording(app) {
-            let _ = self.input_service()?.stop_capture();
-            st.mode = Mode::Idle;
-            return Err(reason);
-        }
         st.last_error = None;
-        drop(st);
-        self.emit_state(app);
         Ok(())
     }
     pub fn stop_recording(&self, app: &AppHandle, gesture: Option<&str>) -> Result<(), String> {
@@ -416,6 +656,14 @@ impl AppSession {
         capture_id: Option<u64>,
     ) -> Result<(), String> {
         let mut st = self.inner.lock().unwrap();
+        if capture_id.is_none() && matches!(st.mode, Mode::PreparingRecording(_)) {
+            self.cancel_preparation_locked(&mut st)?;
+            crate::overlay::hide(app);
+            self.restore_recording_workspace(app);
+            drop(st);
+            self.emit_state(app);
+            return Ok(());
+        }
         if let Some(expected) = capture_id
             && !matches!(&st.mode, Mode::Recording(live) if live.capture_id == expected)
         {
@@ -428,15 +676,28 @@ impl AppSession {
         let Mode::Recording(mut live) = std::mem::replace(&mut st.mode, Mode::Idle) else {
             unreachable!()
         };
-        crate::overlay::hide(app);
         let finished = live.buffer.lock().unwrap().finish();
+        let media = live.screen.finish(finished.duration_us);
+        crate::overlay::hide(app);
+        self.restore_recording_workspace(app);
+        let media = match media {
+            Ok(media) => media,
+            Err(reason) => {
+                st.last_error = Some(format!("桌面画面未能保存，原任务仍保留。{reason}"));
+                drop(st);
+                self.emit_state(app);
+                return Ok(());
+            }
+        };
         if finished.overflow {
+            let _ = self.delete_unreferenced_media(&st, std::slice::from_ref(&live.media_id));
             st.last_error = Some("捕获队列溢出，本次录制未替换原任务".into());
             drop(st);
             self.emit_state(app);
             return Ok(());
         }
         if live.collected.try_reserve(finished.events.len()).is_err() {
+            let _ = self.delete_unreferenced_media(&st, std::slice::from_ref(&live.media_id));
             st.last_error = Some("内存不足，录制未能保存，原任务仍保留".into());
             drop(st);
             self.emit_state(app);
@@ -457,6 +718,16 @@ impl AppSession {
             layout_klid: live.layout_klid,
             started_at_wall_ms: live.started_at_wall_ms,
         });
+        let screen = ScreenRecording::new(
+            live.media_id,
+            media.capture_width,
+            media.capture_height,
+            media.origin_x,
+            media.origin_y,
+            duration,
+        );
+        screen.validate(duration)?;
+        next.screen_recording = Some(screen);
         match st.commit(next.clone()) {
             Ok(()) => {}
             Err(reason) => {
@@ -471,6 +742,14 @@ impl AppSession {
     pub fn cancel_recording(&self, app: &AppHandle, id: &str, revision: u64) -> Result<(), String> {
         let mut st = self.inner.lock().unwrap();
         st.check(id, revision)?;
+        if matches!(st.mode, Mode::PreparingRecording(_)) {
+            self.cancel_preparation_locked(&mut st)?;
+            crate::overlay::hide(app);
+            self.restore_recording_workspace(app);
+            drop(st);
+            self.emit_state(app);
+            return Ok(());
+        }
         if !matches!(st.mode, Mode::Recording(_)) {
             return Err("当前没有进行中的录制".into());
         }
@@ -478,6 +757,7 @@ impl AppSession {
         st.mode = Mode::Idle;
         st.last_error = None;
         crate::overlay::hide(app);
+        self.restore_recording_workspace(app);
         drop(st);
         self.emit_state(app);
         Ok(())
@@ -489,8 +769,21 @@ impl AppSession {
             let next = st.pending.clone().ok_or("没有待保存录制")?;
             st.commit(next)?;
         }
+        let discarded: Vec<_> = st
+            .pending
+            .iter()
+            .filter_map(|doc| {
+                doc.screen_recording
+                    .as_ref()
+                    .map(|screen| screen.id.clone())
+            })
+            .collect();
         st.pending = None;
-        st.last_error = None;
+        st.last_error = if discard {
+            self.delete_unreferenced_media(&st, &discarded).err()
+        } else {
+            None
+        };
         drop(st);
         self.emit_state(app);
         Ok(())
@@ -579,9 +872,22 @@ impl AppSession {
         };
         st.store
             .delete_select(id, revision, &next.id, fallback.as_ref())?;
+        let retired: Vec<_> = std::iter::once(&st.current)
+            .chain(
+                st.histories
+                    .get(id)
+                    .into_iter()
+                    .flat_map(|h| h.past.iter().chain(&h.future)),
+            )
+            .filter_map(|doc| {
+                doc.screen_recording
+                    .as_ref()
+                    .map(|screen| screen.id.clone())
+            })
+            .collect();
         st.histories.remove(id);
         st.current = next;
-        st.last_error = None;
+        st.last_error = self.delete_unreferenced_media(&st, &retired).err();
         drop(st);
         self.emit_state(app);
         Ok(())
@@ -865,6 +1171,15 @@ impl AppSession {
     fn snapshot_locked(&self, st: &SessionState) -> SessionSnapshot {
         let (mode, recording_live, execution_live) = match &st.mode {
             Mode::Idle => ("idle", None, None),
+            Mode::PreparingRecording(live) => (
+                "preparingRecording",
+                Some(RecordingLiveView {
+                    elapsed_us: 0,
+                    event_count: 0,
+                    prepare_remaining_ms: live.remaining_ms(Instant::now()),
+                }),
+                None,
+            ),
             Mode::Recording(live) => {
                 let buffer = live.buffer.lock().unwrap();
                 (
@@ -872,6 +1187,7 @@ impl AppSession {
                     Some(RecordingLiveView {
                         elapsed_us: buffer.elapsed_us(),
                         event_count: buffer.event_count(),
+                        prepare_remaining_ms: 0,
                     }),
                     None,
                 )
@@ -916,7 +1232,7 @@ impl AppSession {
             execution_live,
             task_id: st.doc().id.clone(),
             revision: st.doc().revision,
-            has_recording: !st.doc().actions.is_empty(),
+            has_recording: st.doc().raw.is_some() || !st.doc().actions.is_empty(),
             has_execution_report: st.report.is_some(),
             last_error: st.last_error.clone(),
             hotkey_status: self
@@ -966,6 +1282,7 @@ fn checked_name(name: String) -> Result<String, String> {
         Ok(name.into())
     }
 }
+
 fn empty_outcome(rounds: u32, stopped: bool, error: Option<String>) -> ExecutionOutcome {
     ExecutionOutcome {
         rounds_requested: rounds,
@@ -1153,4 +1470,88 @@ fn demo_document() -> TaskDocument {
         started_at_wall_ms: 0,
     });
     doc
+}
+
+#[cfg(test)]
+mod recording_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn video_cleanup_preserves_saved_undo_and_pending_media() {
+        let directory =
+            std::env::temp_dir().join(format!("repeat-media-{}", crate::document::new_id()));
+        std::fs::create_dir_all(directory.join("recordings")).unwrap();
+        let session = AppSession::new(&directory.join("tasks.sqlite3")).unwrap();
+        let mut st = session.inner.lock().unwrap();
+        let make = |id: &str| ScreenRecording::new(id.into(), 2, 2, 0, 0, 0);
+        let mut saved = st.current.clone();
+        saved.screen_recording = Some(make("saved"));
+        st.commit(saved).unwrap();
+        let mut historic = st.current.clone();
+        historic.screen_recording = Some(make("undo"));
+        st.histories
+            .get_mut(&historic.id)
+            .unwrap()
+            .past
+            .push(historic);
+        let mut pending = st.current.clone();
+        pending.screen_recording = Some(make("pending"));
+        st.pending = Some(pending);
+        let ids: Vec<String> = ["saved", "undo", "pending", "unused"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for id in &ids {
+            std::fs::write(
+                directory.join("recordings").join(format!("{id}.mp4")),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        session.delete_unreferenced_media(&st, &ids).unwrap();
+        for id in ["saved", "undo", "pending"] {
+            assert!(
+                directory
+                    .join("recordings")
+                    .join(format!("{id}.mp4"))
+                    .exists()
+            );
+        }
+        assert!(!directory.join("recordings/unused.mp4").exists());
+        drop(st);
+        drop(session);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn preparation_snapshot_has_no_recorded_input_or_elapsed_time() {
+        let session = AppSession::new(Path::new(":memory:")).unwrap();
+        let now = Instant::now();
+        let mut st = session.inner.lock().unwrap();
+        let task_id = st.current.id.clone();
+        let revision = st.current.revision;
+        let original = serde_json::to_string(&st.current).unwrap();
+        let preparation = RecordingPreparationLive {
+            control: platform::RecordingPreparation::new(1),
+            prepare_until: now + RECORDING_PREPARE_DURATION,
+            task_id,
+            revision,
+            screen: None,
+            media_id: String::new(),
+            geometry: st.current.geometry.clone(),
+        };
+        assert_eq!(preparation.remaining_ms(now), 3000);
+        assert_eq!(preparation.remaining_ms(now + Duration::from_secs(2)), 1000);
+        assert_eq!(preparation.remaining_ms(now + Duration::from_secs(4)), 0);
+        st.mode = Mode::PreparingRecording(preparation);
+        let snapshot = session.snapshot_locked(&st);
+        assert_eq!(snapshot.mode, "preparingRecording");
+        assert!(snapshot.execution_live.is_none());
+        let live = snapshot.recording_live.unwrap();
+        assert_eq!(live.event_count, 0);
+        assert_eq!(live.elapsed_us, 0);
+        assert!(live.prepare_remaining_ms <= 3000);
+        assert!(st.ensure_idle().is_err());
+        assert_eq!(serde_json::to_string(&st.current).unwrap(), original);
+    }
 }

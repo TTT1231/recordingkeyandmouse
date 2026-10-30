@@ -50,6 +50,7 @@ struct ThreadState {
     swallow_left_up: bool,
     buffer: Option<Arc<Mutex<RecordingBuffer>>>,
     capture_id: u64,
+    preparation: Option<crate::platform::RecordingPreparation>,
     on_hotkey: Option<Arc<dyn Fn(HotkeyAction) + Send + Sync>>,
 }
 
@@ -63,6 +64,7 @@ thread_local! {
         swallow_left_up: false,
         buffer: None,
         capture_id: 0,
+        preparation: None,
         on_hotkey: None,
     });
 }
@@ -154,6 +156,15 @@ impl InputServiceHandle {
         self.send_cmd(ServiceCommand::ArmExecution(active, tx))?;
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| "启用原生停止监听超时")?
+    }
+    pub fn prepare_recording(
+        &self,
+        preparation: Option<crate::platform::RecordingPreparation>,
+    ) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.send_cmd(ServiceCommand::PrepareRecording(preparation, tx))?;
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "启用录制准备监听超时")?
     }
     pub fn status_lines(&self) -> Vec<String> {
         self.status.lock().unwrap().clone()
@@ -262,7 +273,7 @@ fn service_thread_main(
                         break;
                     };
                     match cmd {
-                        ServiceCommand::StartCapture(buffer) => match install_hooks() {
+                        ServiceCommand::StartCapture(buffer) => match renew_hooks() {
                             Ok(()) => {
                                 STATE.with(|s| s.borrow_mut().buffer = Some(buffer));
                                 status.lock().unwrap().push("系统钩子已安装".into());
@@ -278,14 +289,24 @@ fn service_thread_main(
                             stop_capture_hooks();
                         }
                         ServiceCommand::StartCaptureChecked(buffer, reply) => {
-                            let result = install_hooks()
+                            let result = renew_hooks()
                                 .map_err(|e| format!("安装输入钩子失败：{e}"))
-                                .map(|()| {
+                                .and_then(|()| {
                                     STATE.with(|s| {
                                         let mut st = s.borrow_mut();
+                                        if st.preparation.as_ref().is_some_and(|p| p.is_cancelled())
+                                        {
+                                            return Err("录制准备已取消".into());
+                                        }
+                                        if st.preparation.is_some() {
+                                            // A down during preparation must not become an
+                                            // unmatched up in the new recording.
+                                            super::recording_ready()?;
+                                        }
+                                        st.preparation = None;
                                         st.capture_id = st.capture_id.wrapping_add(1);
                                         st.buffer = Some(buffer);
-                                        st.capture_id
+                                        Ok(st.capture_id)
                                     })
                                 });
                             let _ = reply.send(result);
@@ -314,7 +335,7 @@ fn service_thread_main(
                         }
                         ServiceCommand::ArmExecution(active, reply) => {
                             let result = if active {
-                                install_hooks().map_err(|e| format!("无法监听执行停止控件：{e}"))
+                                renew_hooks().map_err(|e| format!("无法监听执行停止控件：{e}"))
                             } else {
                                 Ok(())
                             };
@@ -322,6 +343,30 @@ fn service_thread_main(
                                 STATE.with(|s| s.borrow_mut().execution_active = active);
                             }
                             let _ = reply.send(result);
+                        }
+                        ServiceCommand::PrepareRecording(preparation, reply) => {
+                            let result = if preparation.is_some() {
+                                renew_hooks().map_err(|e| format!("无法监听录制准备取消控件：{e}"))
+                            } else {
+                                Ok(())
+                            };
+                            if result.is_ok() {
+                                STATE.with(|s| s.borrow_mut().preparation = preparation);
+                            }
+                            let _ = reply.send(result);
+                        }
+                        #[cfg(test)]
+                        ServiceCommand::InvalidateCaptureHooks(reply) => {
+                            // Simulate Windows silently removing a timed-out
+                            // hook while the cached HHOOK still remains set.
+                            STATE.with(|s| {
+                                let st = s.borrow();
+                                for hook in [st.keyboard_hook, st.mouse_hook].into_iter().flatten()
+                                {
+                                    let _ = UnhookWindowsHookEx(hook);
+                                }
+                            });
+                            let _ = reply.send(());
                         }
                         ServiceCommand::Shutdown => {
                             expected_shutdown = true;
@@ -331,7 +376,12 @@ fn service_thread_main(
                 },
                 WM_HOTKEY => {
                     let action = match msg.wParam.0 as i32 {
-                        HOTKEY_ID_TOGGLE_RECORD => Some(HotkeyAction::ToggleRecording),
+                        HOTKEY_ID_TOGGLE_RECORD => Some(STATE.with(|s| {
+                            s.borrow()
+                                .preparation
+                                .as_ref()
+                                .map_or(HotkeyAction::ToggleRecording, |p| p.cancel())
+                        })),
                         // WM_HOTKEY does not expose injection flags; the low-level hook
                         // handles the physical stop key instead.
                         HOTKEY_ID_STOP_EXEC => None,
@@ -387,20 +437,41 @@ fn install_keyboard_hook() -> windows::core::Result<()> {
     }
     Ok(())
 }
-fn install_hooks() -> windows::core::Result<()> {
-    install_keyboard_hook()?;
-    if STATE.with(|s| s.borrow().mouse_hook.is_some()) {
-        return Ok(());
-    }
+fn renew_hooks() -> windows::core::Result<()> {
+    // Windows can silently remove a timed-out low-level hook. A cached HHOOK
+    // cannot prove it is still listening, so each new operation installs a fresh
+    // pair. Keep the old pair until both replacements succeed and retain the
+    // state that pairs a swallowed overlay click with its eventual button up.
     unsafe {
         let module = GetModuleHandleW(None)?;
-        let hook = SetWindowsHookExW(
+        let keyboard = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            Some(HINSTANCE(module.0)),
+            0,
+        )?;
+        let mouse = match SetWindowsHookExW(
             WH_MOUSE_LL,
             Some(low_level_mouse_proc),
             Some(HINSTANCE(module.0)),
             0,
-        )?;
-        STATE.with(|s| s.borrow_mut().mouse_hook = Some(hook));
+        ) {
+            Ok(hook) => hook,
+            Err(error) => {
+                let _ = UnhookWindowsHookEx(keyboard);
+                return Err(error);
+            }
+        };
+        let previous = STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            (
+                state.keyboard_hook.replace(keyboard),
+                state.mouse_hook.replace(mouse),
+            )
+        });
+        for hook in [previous.0, previous.1].into_iter().flatten() {
+            let _ = UnhookWindowsHookEx(hook);
+        }
     }
     Ok(())
 }
@@ -552,8 +623,14 @@ fn classify_stop_mouse_event(
     (false, false)
 }
 
-fn overlay_stop_action(execution_active: bool, capture_id: u64) -> HotkeyAction {
-    if execution_active {
+fn overlay_stop_action(
+    execution_active: bool,
+    capture_id: u64,
+    preparation: Option<&crate::platform::RecordingPreparation>,
+) -> HotkeyAction {
+    if let Some(preparation) = preparation {
+        preparation.cancel()
+    } else if execution_active {
         HotkeyAction::StopExecution
     } else {
         HotkeyAction::StopRecording(capture_id)
@@ -576,7 +653,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
         {
             let (buffer, callback) = STATE.with(|s| {
                 let st = s.borrow();
-                let stop = st.execution_active
+                let stop = (st.execution_active || st.preparation.is_some())
                     && is_physical_stop_key(
                         &kind,
                         info.flags.0,
@@ -585,11 +662,24 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     );
                 (
                     st.buffer.clone(),
-                    if stop { st.on_hotkey.clone() } else { None },
+                    if stop {
+                        st.on_hotkey.clone().map(|cb| {
+                            (
+                                cb,
+                                overlay_stop_action(
+                                    st.execution_active,
+                                    st.capture_id,
+                                    st.preparation.as_ref(),
+                                ),
+                            )
+                        })
+                    } else {
+                        None
+                    },
                 )
             });
-            if let Some(callback) = callback {
-                callback(HotkeyAction::StopExecution);
+            if let Some((callback, action)) = callback {
+                callback(action);
             }
             if let Some(buffer) = buffer {
                 HOOK_WITH_BUFFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -614,7 +704,7 @@ unsafe extern "system" fn low_level_mouse_proc(
         let msg = wparam.0 as u32;
         let (swallow, callback) = STATE.with(|s| {
             let mut st = s.borrow_mut();
-            let active = st.execution_active || st.buffer.is_some();
+            let active = st.execution_active || st.buffer.is_some() || st.preparation.is_some();
             let region = if active && msg == WM_LBUTTONDOWN && info.flags & LLMHF_INJECTED == 0 {
                 *crate::platform::OVERLAY_STOP_REGION.lock().unwrap()
             } else {
@@ -629,11 +719,19 @@ unsafe extern "system" fn low_level_mouse_proc(
                 info.pt.y,
                 region,
             );
-            let action = overlay_stop_action(st.execution_active, st.capture_id);
             (
                 swallow,
                 if stop {
-                    st.on_hotkey.clone().map(|cb| (cb, action))
+                    st.on_hotkey.clone().map(|cb| {
+                        (
+                            cb,
+                            overlay_stop_action(
+                                st.execution_active,
+                                st.capture_id,
+                                st.preparation.as_ref(),
+                            ),
+                        )
+                    })
                 } else {
                     None
                 },
@@ -745,6 +843,86 @@ fn configure_hotkeys(
 #[cfg(test)]
 mod stop_control_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "真实 Windows 钩子故障注入与固定 F6/鼠标样本，需交互桌面"]
+    fn native_capture_recovers_removed_idle_hooks() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+            MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+        };
+        crate::platform::init_process_dpi();
+        let service = start_input_service(Arc::new(|_| {})).unwrap();
+        service
+            .prepare_recording(Some(crate::platform::RecordingPreparation::new(1)))
+            .unwrap();
+        service.prepare_recording(None).unwrap();
+        let (tx, rx) = mpsc::channel();
+        service
+            .send_cmd(ServiceCommand::InvalidateCaptureHooks(tx))
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let buffer = Arc::new(Mutex::new(RecordingBuffer::default()));
+        buffer.lock().unwrap().begin();
+        service
+            .prepare_recording(Some(crate::platform::RecordingPreparation::new(2)))
+            .unwrap();
+        service.start_capture(buffer.clone()).unwrap();
+        let keys = [false, true].map(|up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0x75),
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    dwExtraInfo: 0x54455354,
+                    ..Default::default()
+                },
+            },
+        });
+        assert_eq!(unsafe { SendInput(&keys, size_of::<INPUT>() as i32) }, 2);
+        for dx in [8, -8] {
+            let input = INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx,
+                        dwFlags: MOUSEEVENTF_MOVE,
+                        dwExtraInfo: 0x54455354,
+                        ..Default::default()
+                    },
+                },
+            };
+            assert_eq!(unsafe { SendInput(&[input], size_of::<INPUT>() as i32) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        service.stop_capture().unwrap();
+        let finished = buffer.lock().unwrap().finish();
+        service.shutdown();
+        let key_events: Vec<_> = finished
+            .events
+            .iter()
+            .filter(|event| event.kind.vk() == Some(0x75))
+            .collect();
+        let mouse_events = finished
+            .events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::MouseMove { .. }))
+            .count();
+        assert_eq!(key_events.len(), 2, "失效的键盘钩子必须在录制前重新安装");
+        assert!(key_events[0].kind.is_key_down() && key_events[1].kind.is_key_up());
+        assert!(mouse_events >= 2, "失效的鼠标钩子必须在录制前重新安装");
+        let evidence = serde_json::json!({"fault":"OS-removed idle hooks with cached handles","fixedKeyEvents":key_events,"mouseEventCount":mouse_events,"balanced":crate::document::validate_balanced(&finished.events).is_ok()});
+        std::fs::write(
+            "target/removed-hooks-evidence.json",
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+        println!("REMOVED_HOOKS_EVIDENCE {evidence}");
+    }
     use crate::platform::StopRegion;
 
     #[test]
@@ -774,10 +952,29 @@ mod stop_control_tests {
     #[test]
     fn recording_overlay_stop_is_bound_to_capture() {
         assert_eq!(
-            overlay_stop_action(false, 42),
+            overlay_stop_action(false, 42, None),
             HotkeyAction::StopRecording(42)
         );
-        assert_eq!(overlay_stop_action(true, 42), HotkeyAction::StopExecution);
+        assert_eq!(
+            overlay_stop_action(true, 42, None),
+            HotkeyAction::StopExecution
+        );
+    }
+
+    #[test]
+    fn preparation_stop_cancels_only_its_own_token() {
+        let first = crate::platform::RecordingPreparation::new(10);
+        let second = crate::platform::RecordingPreparation::new(11);
+        assert_eq!(
+            overlay_stop_action(false, 42, Some(&first)),
+            HotkeyAction::CancelRecordingPreparation(10)
+        );
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+        assert_eq!(
+            overlay_stop_action(false, 43, None),
+            HotkeyAction::StopRecording(43)
+        );
     }
 
     #[test]

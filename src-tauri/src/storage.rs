@@ -14,10 +14,10 @@ impl Store {
         let version: u32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(db_error)?;
-        if version > 1 {
+        if version > 2 {
             return Err("本地任务由较新版本创建，请使用更新的 Repeat 打开；原文件未修改".into());
         }
-        connection.execute_batch("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA user_version=1; CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);").map_err(|e| format!("无法初始化本地任务：{e}"))?;
+        connection.execute_batch("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; BEGIN; CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=2; COMMIT;").map_err(|e| format!("无法初始化本地任务：{e}"))?;
         Ok(Self { connection })
     }
     pub fn list(&self) -> Result<Vec<TaskSummary>, String> {

@@ -62,6 +62,232 @@ fn same(doc: &TaskDocument) -> String {
 }
 const L: MouseButton = MouseButton::Left;
 
+fn add_screen(d: &mut TaskDocument) {
+    d.screen_recording = Some(ScreenRecording::new(
+        "fixed-screen".into(),
+        3000,
+        2000,
+        -1000,
+        -100,
+        d.duration_us,
+    ));
+}
+
+#[test]
+fn screen_wait_edits_freeze_source_and_restore_original_timing() {
+    let mut d = doc(
+        vec![
+            (100_000, movement(1, 1)),
+            (300_000, key(0x41, true)),
+            (350_000, key(0x41, false)),
+        ],
+        1_000_000,
+    );
+    add_screen(&mut d);
+    let original = d.screen_recording.clone();
+    let raw = serde_json::to_string(&d.raw).unwrap();
+    d.apply(EditRequest::InsertWait {
+        after_action: Some(d.actions[0].id.clone()),
+        duration_us: 200_000,
+    })
+    .unwrap();
+    let screen = d.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(99_000), 99_000);
+    assert_eq!(screen.source_time_us(100_000), 100_000);
+    assert_eq!(screen.source_time_us(299_999), 100_000);
+    assert_eq!(screen.source_time_us(300_000), 100_000);
+    assert_eq!(screen.source_time_us(500_000), 300_000);
+    assert_eq!(screen.source_time_us(d.duration_us), 1_000_000);
+    let wait = d
+        .actions
+        .iter()
+        .find(|a| matches!(a.kind, ActionKind::Wait))
+        .unwrap()
+        .id
+        .clone();
+    d.apply(EditRequest::UpdateWait {
+        action_id: wait.clone(),
+        duration_us: 400_000,
+    })
+    .unwrap();
+    let screen = d.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(400_000), 100_000);
+    assert_eq!(screen.source_time_us(700_000), 300_000);
+    assert_eq!(screen.source_time_us(d.duration_us), 1_000_000);
+    d.apply(EditRequest::DeleteAction { action_id: wait })
+        .unwrap();
+    assert_eq!(d.screen_recording, original);
+    assert_eq!(d.duration_us, 1_000_000);
+    assert_eq!(serde_json::to_string(&d.raw).unwrap(), raw);
+}
+
+#[test]
+fn screen_appended_wait_preserves_captured_tail_pause() {
+    let mut d = doc(vec![(100, movement(1, 1))], 1000);
+    add_screen(&mut d);
+    d.apply(EditRequest::InsertWait {
+        after_action: None,
+        duration_us: 200,
+    })
+    .unwrap();
+    let screen = d.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(900), 900);
+    assert_eq!(screen.source_time_us(1100), 1000);
+    assert_eq!(screen.source_time_us(1200), 1000);
+    let wait = d
+        .actions
+        .iter()
+        .find(|a| matches!(a.kind, ActionKind::Wait))
+        .unwrap()
+        .id
+        .clone();
+    d.apply(EditRequest::DeleteAction { action_id: wait })
+        .unwrap();
+    assert_eq!(d.duration_us, 1000);
+    assert_eq!(
+        d.screen_recording.as_ref().unwrap().source_time_us(1000),
+        1000
+    );
+}
+
+#[test]
+fn screen_move_retiming_survives_deleting_the_move_and_serialization() {
+    let mut d = doc(
+        vec![
+            (10, movement(10, 20)),
+            (110, movement(20, 30)),
+            (200, key(0x41, true)),
+            (210, key(0x41, false)),
+        ],
+        300,
+    );
+    add_screen(&mut d);
+    let id = d.actions[0].id.clone();
+    d.apply(EditRequest::UpdateMove {
+        action_id: id.clone(),
+        x: 40,
+        y: 50,
+        duration_us: 200,
+        link_next_click: false,
+    })
+    .unwrap();
+    let screen = d.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(5), 5);
+    assert_eq!(screen.source_time_us(60), 35);
+    assert_eq!(screen.source_time_us(110), 60);
+    assert_eq!(screen.source_time_us(210), 110);
+    assert_eq!(screen.source_time_us(300), 200);
+    assert_eq!(screen.source_time_us(400), 300);
+    let mapping = d.screen_recording.clone();
+    d.apply(EditRequest::DeleteAction { action_id: id })
+        .unwrap();
+    assert_eq!(d.screen_recording, mapping);
+    let reopened: TaskDocument = serde_json::from_str(&same(&d)).unwrap();
+    assert_eq!(reopened.screen_recording, mapping);
+    assert_eq!(reopened.view().screen_recording, mapping);
+}
+
+#[test]
+fn screen_zero_duration_move_and_collapsed_final_interval_keep_boundaries() {
+    let mut point = doc(vec![(100, movement(10, 20))], 300);
+    add_screen(&mut point);
+    let id = point.actions[0].id.clone();
+    point
+        .apply(EditRequest::UpdateMove {
+            action_id: id.clone(),
+            x: 30,
+            y: 40,
+            duration_us: 50,
+            link_next_click: false,
+        })
+        .unwrap();
+    let screen = point.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(125), 100);
+    assert_eq!(screen.source_time_us(250), 200);
+    point
+        .apply(EditRequest::UpdateMove {
+            action_id: id,
+            x: 30,
+            y: 40,
+            duration_us: 0,
+            link_next_click: false,
+        })
+        .unwrap();
+    assert_eq!(
+        point.screen_recording.as_ref().unwrap().source_time_us(250),
+        250
+    );
+
+    let mut final_move = doc(vec![(0, movement(1, 1)), (100, movement(2, 2))], 100);
+    add_screen(&mut final_move);
+    final_move
+        .apply(EditRequest::UpdateMove {
+            action_id: final_move.actions[0].id.clone(),
+            x: 3,
+            y: 3,
+            duration_us: 0,
+            link_next_click: false,
+        })
+        .unwrap();
+    assert_eq!(final_move.duration_us, 0);
+    let screen = final_move.screen_recording.as_ref().unwrap();
+    assert_eq!(screen.source_time_us(0), 100);
+    screen.validate(0).unwrap();
+}
+
+#[test]
+fn screen_edit_rejection_preserves_mapping_and_old_documents_remain_readable() {
+    let mut d = doc(
+        vec![
+            (0, down(L, 20, 20)),
+            (10, key(0x41, true)),
+            (20, key(0x41, false)),
+            (30, up(L, 20, 20)),
+        ],
+        100,
+    );
+    add_screen(&mut d);
+    let key_id = d
+        .actions
+        .iter()
+        .find(|a| matches!(a.kind, ActionKind::Keys { .. }))
+        .unwrap()
+        .id
+        .clone();
+    let before = same(&d);
+    assert!(
+        d.apply(EditRequest::InsertWait {
+            after_action: Some(key_id),
+            duration_us: 10
+        })
+        .is_err()
+    );
+    assert_eq!(same(&d), before);
+    let mut legacy = serde_json::to_value(&d).unwrap();
+    legacy.as_object_mut().unwrap().remove("screenRecording");
+    assert!(
+        serde_json::from_value::<TaskDocument>(legacy)
+            .unwrap()
+            .screen_recording
+            .is_none()
+    );
+    let raw = d.raw.clone().unwrap();
+    d.replace_recording(raw);
+    assert!(d.screen_recording.is_none());
+}
+
+#[test]
+fn screen_mapping_rejects_unsafe_media_ids_and_noncontiguous_times() {
+    let mut screen = ScreenRecording::new("../outside".into(), 10, 10, 0, 0, 100);
+    assert!(screen.validate(100).is_err());
+    screen.id = "local-video".into();
+    screen.spans[0].start_us = 1;
+    assert!(screen.validate(100).is_err());
+    screen.spans[0].start_us = 0;
+    screen.spans[0].source_end_us = 101;
+    assert!(screen.validate(100).is_err());
+}
+
 #[test]
 fn execution_projects_only_small_exterior_moves_without_changing_recording() {
     let d = doc(

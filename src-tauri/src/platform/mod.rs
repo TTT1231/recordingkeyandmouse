@@ -2,6 +2,7 @@
 //! 不依赖界面组件或数据库；测试用可替换的时钟/注入驱动（见 `scheduler::ReplayDriver`）。
 //! Linux X11 后端尚未实现；非 Windows 平台使用明确报错的占位实现。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::capture::RecordingBuffer;
@@ -32,9 +33,35 @@ pub fn set_overlay_stop_region(region: Option<StopRegion>) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyAction {
     ToggleRecording,
+    CancelRecordingPreparation(u64),
     StopRecording(u64),
     StopExecution,
     EnvironmentChanged,
+}
+
+/// A cancellation token belongs to one preparation, never a later recording.
+#[derive(Clone, Debug)]
+pub struct RecordingPreparation {
+    pub id: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RecordingPreparation {
+    pub fn new(id: u64) -> Self {
+        Self {
+            id,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) -> HotkeyAction {
+        self.cancelled.store(true, Ordering::SeqCst);
+        HotkeyAction::CancelRecordingPreparation(self.id)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug)]
@@ -55,6 +82,12 @@ pub enum ServiceCommand {
         std::sync::mpsc::Sender<Result<(), String>>,
     ),
     ArmExecution(bool, std::sync::mpsc::Sender<Result<(), String>>),
+    PrepareRecording(
+        Option<RecordingPreparation>,
+        std::sync::mpsc::Sender<Result<(), String>>,
+    ),
+    #[cfg(test)]
+    InvalidateCaptureHooks(std::sync::mpsc::Sender<()>),
     Shutdown,
 }
 

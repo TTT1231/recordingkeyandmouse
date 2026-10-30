@@ -4,9 +4,11 @@ mod commands;
 pub mod document;
 pub mod event;
 pub mod geometry;
+mod media;
 mod overlay;
 pub mod platform;
 pub mod scheduler;
+pub mod screen_capture;
 mod session;
 pub mod storage;
 use std::sync::Arc;
@@ -16,6 +18,13 @@ pub fn run() {
     platform::init_process_dpi();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .register_asynchronous_uri_scheme_protocol("recording", |context, request, responder| {
+            let app = context.app_handle().clone();
+            std::thread::spawn(move || {
+                let session = app.state::<Arc<session::AppSession>>();
+                responder.respond(media::serve(&session, request));
+            });
+        })
         .on_window_event(|window, event| {
             if window.label() == "main"
                 && let tauri::WindowEvent::CloseRequested { api, .. } = event

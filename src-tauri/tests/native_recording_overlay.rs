@@ -19,10 +19,10 @@ use windows::{
         Graphics::Gdi::ClientToScreen,
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::WindowsAndMessaging::{
-            CallNextHookEx, DispatchMessageW, FindWindowExW, GetMessageW, GetWindowRect,
-            GetWindowThreadProcessId, IsWindowVisible, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT,
-            PostThreadMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-            WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_QUIT,
+            CallNextHookEx, DispatchMessageW, FindWindowExW, GetClientRect, GetMessageW,
+            GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, LLMHF_INJECTED, MSG,
+            MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowsHookExW, TranslateMessage,
+            UnhookWindowsHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_QUIT,
         },
     },
     core::w,
@@ -96,6 +96,240 @@ fn overlay_for_process(pid: u32) -> Option<HWND> {
         }
         previous = Some(hwnd);
     }
+}
+
+fn assert_status_has_no_rectangular_frame(hwnd: HWND) -> serde_json::Value {
+    let (mut outer, mut client, mut origin) = (RECT::default(), RECT::default(), POINT::default());
+    unsafe {
+        GetWindowRect(hwnd, &mut outer).unwrap();
+        GetClientRect(hwnd, &mut client).unwrap();
+        assert!(ClientToScreen(hwnd, &mut origin).as_bool());
+    }
+    assert_eq!(
+        (outer.left, outer.top),
+        (origin.x, origin.y),
+        "状态条外不能有系统边框偏移"
+    );
+    assert_eq!(
+        (outer.right - outer.left, outer.bottom - outer.top),
+        (client.right, client.bottom),
+        "透明圆角外不能残留矩形非客户区"
+    );
+    serde_json::json!({"outerWidth":outer.right-outer.left,"outerHeight":outer.bottom-outer.top,"clientWidth":client.right,"clientHeight":client.bottom,"nonClientOffsetX":origin.x-outer.left,"nonClientOffsetY":origin.y-outer.top})
+}
+
+/// A full Tauri recording uses its global hotkey, native preparation hooks and
+/// persisted document. Synthetic keys are a fixed fixture, not physical-input proof.
+#[test]
+#[ignore = "启动隔离 Repeat 并发送 F10/F6/F7 固定样本，核对准备取消与事件起点"]
+fn native_recording_preparation_excludes_early_input() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+
+    fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ready() {
+            assert!(Instant::now() < deadline, "等待超时：{label}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    fn tap(vk: u16) {
+        let inputs = [false, true].map(|up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    dwExtraInfo: 0x50524550,
+                    ..Default::default()
+                },
+            },
+        });
+        assert_eq!(
+            unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) },
+            2,
+            "固定样本输入失败"
+        );
+    }
+    fn border_visible(pid: u32) -> bool {
+        let mut previous = None;
+        while let Ok(hwnd) =
+            unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行范围")) }
+        {
+            let mut owner = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+            if owner == pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+                return true;
+            }
+            previous = Some(hwnd);
+        }
+        false
+    }
+
+    platform::init_process_dpi();
+    let executable = std::env::var_os("REPEAT_E2E_EXECUTABLE")
+        .expect("REPEAT_E2E_EXECUTABLE 须指向测试用 Repeat 可执行文件");
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!(
+            "recording-preparation-e2e-{}",
+            repeat_lib::document::new_id()
+        ));
+    std::fs::create_dir(&directory).unwrap();
+    let mut store = Store::open(&directory.join("tasks.sqlite3")).unwrap();
+    let mut doc = TaskDocument::new(
+        "录制准备固定样本".into(),
+        platform::snapshot_geometry(),
+        platform::current_layout_klid(),
+    );
+    doc.replace_recording(repeat_lib::document::RawRecording {
+        gestures: Default::default(),
+        started_at_wall_ms: 0,
+        duration_us: 100_000,
+        events: [
+            EventKind::KeyDown {
+                vk: 0x74,
+                scan: 0x3f,
+                extended: false,
+            },
+            EventKind::KeyUp {
+                vk: 0x74,
+                scan: 0x3f,
+                extended: false,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| repeat_lib::event::RecordedEvent {
+            seq: index as u64 + 1,
+            time_us: index as i64 * 50_000,
+            native_time_ms: index as u32 * 50,
+            kind,
+        })
+        .collect(),
+        geometry: doc.geometry.clone(),
+        layout_klid: doc.layout_klid.clone(),
+    });
+    store.insert(&doc).unwrap();
+    store
+        .set_setting("hotkeys", r#"{"recordVk":121,"stopVk":122}"#)
+        .unwrap();
+    let original = serde_json::to_value(&doc).unwrap();
+    let child = ChildGuard(
+        Command::new(executable)
+            .env("REPEAT_DATA_DIR", &directory)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = child.0.id();
+    wait_until("隔离主窗口", || main_for_process(pid).is_some());
+    // Overlay creation follows hotkey initialization. Wait for its hidden HWND,
+    // then give the WebView enough time to mount before the fixed input sample.
+    wait_until("状态条初始化", || {
+        let mut previous = None;
+        while let Ok(hwnd) =
+            unsafe { FindWindowExW(None, previous, None, w!("Repeat 执行状态")) }
+        {
+            let mut owner = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+            if owner == pid {
+                return true;
+            }
+            previous = Some(hwnd);
+        }
+        false
+    });
+    unsafe {
+        let _ = SetForegroundWindow(main_for_process(pid).unwrap());
+    }
+    thread::sleep(Duration::from_secs(2));
+    tap(0x79);
+    wait_until("准备状态条", || overlay_for_process(pid).is_some());
+    let preparation_window =
+        assert_status_has_no_rectangular_frame(overlay_for_process(pid).unwrap());
+    assert!(!border_visible(pid), "准备期间不应显示录制边框");
+    tap(0x75); // F6 during preparation must not enter a recording.
+    tap(0x79); // The record hotkey cancels this preparation.
+    wait_until("取消准备", || overlay_for_process(pid).is_none());
+    thread::sleep(Duration::from_millis(3200));
+    assert!(overlay_for_process(pid).is_none(), "取消后不应延迟开始录制");
+    assert_eq!(
+        serde_json::to_value(store.load(&doc.id).unwrap()).unwrap(),
+        original
+    );
+
+    let requested_at_ms = repeat_lib::document::wall_ms();
+    tap(0x79);
+    wait_until("再次准备", || overlay_for_process(pid).is_some());
+    tap(0x75);
+    wait_until("正式录制边框", || border_visible(pid));
+    let recording_window =
+        assert_status_has_no_rectangular_frame(overlay_for_process(pid).unwrap());
+    thread::sleep(Duration::from_millis(200));
+    tap(0x76); // F7 after preparation must be captured as a complete pair.
+    thread::sleep(Duration::from_millis(150));
+    tap(0x79);
+    wait_until("录制保存", || {
+        store.load(&doc.id).unwrap().revision > doc.revision
+    });
+    let saved = store.load(&doc.id).unwrap();
+    let raw = saved.raw.as_ref().expect("缺少原始录制");
+    let keys: Vec<_> = raw
+        .events
+        .iter()
+        .filter(|e| e.kind.vk().is_some())
+        .collect();
+    assert_eq!(keys.len(), 2, "仅正式录制阶段的 F7 按下与抬起应被保存");
+    assert!(matches!(keys[0].kind, EventKind::KeyDown { vk: 0x76, .. }));
+    assert!(matches!(keys[1].kind, EventKind::KeyUp { vk: 0x76, .. }));
+    assert!(
+        raw.started_at_wall_ms - requested_at_ms >= 3000,
+        "录制提前开始"
+    );
+    assert!(keys[0].time_us >= 0 && keys[1].time_us >= keys[0].time_us);
+    assert!(raw.duration_us > keys[1].time_us, "结尾停顿应保留");
+    assert!(repeat_lib::document::validate_balanced(&saved.compile()).is_ok());
+    let screen = saved
+        .screen_recording
+        .as_ref()
+        .expect("录制须保存桌面画面引用");
+    screen.validate(saved.duration_us).unwrap();
+    let video = directory
+        .join("recordings")
+        .join(format!("{}.mp4", screen.id));
+    assert!(std::fs::metadata(&video).unwrap().len() > 1000);
+    let reopened = Store::open(&directory.join("tasks.sqlite3")).unwrap();
+    assert_eq!(
+        reopened.load(&doc.id).unwrap().screen_recording.as_ref(),
+        Some(screen)
+    );
+    let evidence = serde_json::json!({
+        "fixture": "isolated Tauri; synthetic F10 controls, F6 preparation, F7 recording",
+        "preparationWindow": preparation_window,
+        "recordingWindow": recording_window,
+        "geometry": raw.geometry,
+        "cancelPreservedDocument": true,
+        "preparationMs": raw.started_at_wall_ms - requested_at_ms,
+        "durationUs": raw.duration_us,
+        "recordedKeys": keys,
+        "earlyInputExcluded": true,
+        "physicalInputVerified": false,
+        "videoPath": video,
+        "screenRecording": screen,
+    });
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/recording-preparation-evidence.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    println!("RECORDING_PREPARATION_EVIDENCE {evidence}");
 }
 
 #[test]

@@ -115,8 +115,6 @@ export default function App() {
         const subscription = api
             .onStateChanged(next => {
                 if (!acceptSnapshot(next)) return;
-                const doc = workspaceRef.current?.document;
-                if (!doc || doc.taskId !== next.taskId || doc.revision !== next.revision) void refresh();
                 if (next.mode !== "idle") {
                     setPlaying(false);
                     setDialog(current => (current?.type === "about" ? current : null));
@@ -133,6 +131,18 @@ export default function App() {
             void subscription.then(stop => stop());
         };
     }, [acceptSnapshot, refresh]);
+    // Polling can accept a newer saved revision before its state event arrives.
+    // Reconcile either source so an older event cannot leave the old recording
+    // on screen after polling stops in idle mode.
+    useEffect(() => {
+        if (
+            snapshot &&
+            (!workspace ||
+                workspace.document.taskId !== snapshot.taskId ||
+                workspace.document.revision !== snapshot.revision)
+        )
+            void refresh();
+    }, [snapshot?.taskId, snapshot?.revision, workspace?.document.taskId, workspace?.document.revision, refresh]);
     useEffect(() => {
         if (!snapshot || snapshot.mode === "idle") return;
         const timer = setInterval(
@@ -431,6 +441,7 @@ export default function App() {
                   events: [],
                   actions: [],
                   referenceImage: null,
+                  screenRecording: null,
               }
             : document;
     const notices = [!formDialog ? error : null, notice, session.lastError].filter(
@@ -565,6 +576,15 @@ export default function App() {
                             }
                         }}
                     />
+                    {mode === "preparingRecording" && (
+                        <div className="executing-notice" role="status" aria-atomic="true">
+                            将在 {Math.max(1, Math.ceil((session.recordingLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
+                            秒后开始录制，请切换到目标应用。
+                            {session.recordHotkeyAvailable
+                                ? `${vkName(session.hotkeys.recordVk)} / Esc 可取消。`
+                                : "Esc 或停止按钮可取消。"}
+                        </div>
+                    )}
                     {mode === "preparing" && (
                         <div className="executing-notice" role="status">
                             将在 {Math.max(1, Math.ceil((session.executionLive?.prepareRemainingMs ?? 0) / 1000))}{" "}
@@ -657,19 +677,13 @@ export default function App() {
                 </div>
             )}
             {dialog?.type === "record" && (
-                <Modal title="开始录制" onClose={closeDialog}>
+                <Modal title="录制" compact onClose={closeDialog}>
                     <div className="dialog-body">
                         <p className="dialog-lead">
-                            {session.recordHotkeyAvailable ? (
-                                <>
-                                    像平常一样操作，按 <kbd className="keycap">{vkName(session.hotkeys.recordVk)}</kbd>{" "}
-                                    或点击停止按钮结束录制。
-                                </>
-                            ) : (
-                                <>录制快捷键暂不可用，请点击停止按钮结束录制。可在帮助菜单的快捷键设置中更换快捷键。</>
-                            )}
+                            {document.actions.length > 0 || document.durationUs > 0
+                                ? "3 秒后开始，将替换当前录制。"
+                                : "3 秒后开始录制。"}
                         </p>
-                        {document.actions.length > 0 && <p className="form-note">本次录制将替换现有录制。</p>}
                         {error && (
                             <p className="form-error" role="alert">
                                 {error}

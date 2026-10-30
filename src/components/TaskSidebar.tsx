@@ -83,12 +83,10 @@ export function TaskSidebar(p: Props) {
                                 }}
                             >
                                 <span className="task-icon">
-                                    <Icon name={task.actionCount ? "repeat" : "folder"} size={17} />
+                                    <Icon name="folder" size={17} />
                                 </span>
                                 <span className="task-name">{task.name}</span>
-                                <span className="task-meta">
-                                    {task.actionCount ? formatSeconds(task.durationUs) : "尚未录制"}
-                                </span>
+                                <span className="task-meta">{formatSeconds(task.durationUs)}</span>
                             </button>
                         </div>
                     );

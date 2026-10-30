@@ -111,7 +111,12 @@ impl RecordingBuffer {
 
     /// 开始录制：清空旧数据并记录起点。起点即"相对录制起点"的时间零点。
     pub fn begin(&mut self) {
-        self.started = Some(Instant::now());
+        self.begin_at(Instant::now());
+    }
+
+    /// Share the same monotonic origin with the desktop video worker.
+    pub fn begin_at(&mut self, start: Instant) {
+        self.started = Some(start);
         self.events.clear();
         self.next_seq = 1;
         self.overflow = false;

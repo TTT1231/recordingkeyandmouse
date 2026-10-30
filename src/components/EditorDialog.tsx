@@ -10,6 +10,7 @@ export function Modal({
     onClose,
     open = true,
     wide = false,
+    compact = false,
     icon,
 }: {
     title: string;
@@ -17,6 +18,7 @@ export function Modal({
     onClose: () => void;
     open?: boolean;
     wide?: boolean;
+    compact?: boolean;
     icon?: ReactNode;
 }) {
     const ref = useRef<HTMLDialogElement>(null);
@@ -32,7 +34,7 @@ export function Modal({
     return (
         <dialog
             ref={ref}
-            className={`dialog${wide ? " dialog-wide" : ""}`}
+            className={`dialog${wide ? " dialog-wide" : ""}${compact ? " dialog-compact" : ""}`}
             aria-label={title}
             onCancel={e => {
                 e.preventDefault();
