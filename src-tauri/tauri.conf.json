@@ -35,7 +35,6 @@
                 "installerIcon": "icons/icon.ico",
                 "uninstallerIcon": "icons/icon.ico",
                 "languages": ["SimpChinese"],
-                "sidebarImage": "installer/sidebar.bmp",
                 "headerImage": "installer/header.bmp"
             }
         }

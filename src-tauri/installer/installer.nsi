@@ -51,7 +51,6 @@ ${StrLoc}
 !define INSTALLMODE "{{install_mode}}"
 !define LICENSE "{{license}}"
 !define INSTALLERICON "{{installer_icon}}"
-!define SIDEBARIMAGE "{{sidebar_image}}"
 !define HEADERIMAGE "{{header_image}}"
 !define UNINSTALLERICON "{{uninstaller_icon}}"
 !define UNINSTALLERHEADERIMAGE "{{uninstaller_header_image}}"
@@ -137,11 +136,6 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Installer icon
 !if "${INSTALLERICON}" != ""
   !define MUI_ICON "${INSTALLERICON}"
-!endif
-
-; Installer sidebar image
-!if "${SIDEBARIMAGE}" != ""
-  !define MUI_WELCOMEFINISHPAGE_BITMAP "${SIDEBARIMAGE}"
 !endif
 
 ; Enable header images for installer and uninstaller pages when either image is configured.
@@ -440,19 +434,6 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
-;
-; Don't auto jump to finish page after installation page,
-; because the installation page has useful info that can be used debug any issues with the installer.
-!define MUI_FINISHPAGE_NOAUTOCLOSE
-; Use show readme button in the finish page as a button create a desktop shortcut
-!define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
-; Show run app after installation.
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
-!define MUI_FINISHPAGE_TITLE "正在完成 ${PRODUCTNAME} 安装向导"
-!define MUI_FINISHPAGE_TEXT "${PRODUCTNAME} 已成功安装到你的电脑。"
 Page custom RepeatFinishPage RepeatFinishLeave
 
 Function RunMainBinary
