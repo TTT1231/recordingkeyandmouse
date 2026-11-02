@@ -1,4 +1,4 @@
-# ADR-0001：桌面录放的架构与关键约定
+# 技术架构决策：桌面录放的架构与关键约定
 
 状态：Tauri 2 + React/TypeScript + Rust、Windows 原生输入、SQLite 已采用。本文描述当前技术规则与选择理由；产品用法见 [README](../../README.md)，实测边界见[测试说明](../testing.md#验证边界)。
 
