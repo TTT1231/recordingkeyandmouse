@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import { actionAtTime } from "./actions";
 import { ActionsPanel } from "./components/ActionsPanel";
@@ -16,13 +17,19 @@ import { NameDialog, ReferenceDialog, ShortcutsDialog } from "./components/Works
 import { stopKeyNames, vkName } from "./format";
 import { SIDEBAR_DEFAULT, SIDEBAR_OPEN_KEY, SIDEBAR_WIDTH_KEY, clampSidebarWidth } from "./layout";
 import type { ActionView, EditRequest, SessionSnapshot, WorkspaceView } from "./types";
+import { checkForUpdate, type ReleaseInfo } from "./update";
 import { version } from "../package.json";
 import appIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 type Dialog =
     | { type: "editor"; target: EditorTarget }
-    | { type: "record" | "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" }
+    | { type: "record" | "create" | "rename" | "delete" | "reference" | "shortcuts" | "about" | "update" }
     | null;
+type UpdateStatus = "idle" | "checking" | "latest" | "available" | "error";
+/** 纯信息展示弹窗：会话忙时保留、不算表单弹窗、打开时不清理全局错误。 */
+function isInfoDialog(dialog: Dialog): boolean {
+    return dialog?.type === "about" || dialog?.type === "update";
+}
 function readSidebarWidth(): number {
     try {
         const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
@@ -59,12 +66,17 @@ export default function App() {
         [picking, setPicking] = useState(false),
         [pickedPoint, setPickedPoint] = useState<{ x: number; y: number } | null>(null),
         [dialogNode, setDialogNode] = useState<HTMLDialogElement | null>(null),
-        [toast, setToast] = useState("");
+        [toast, setToast] = useState(""),
+        [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle"),
+        [updateInfo, setUpdateInfo] = useState<ReleaseInfo | null>(null),
+        [updateError, setUpdateError] = useState("");
     const workspaceRef = useRef<WorkspaceView | null>(null),
         snapshotRef = useRef<SessionSnapshot | null>(null),
         previousDemoPanels = useRef<{ actionsOpen: boolean; timelineOpen: boolean } | null>(null),
         mounted = useRef(true),
         fetchSerial = useRef(0),
+        updateSerial = useRef(0),
+        dialogRef = useRef<Dialog>(null),
         mutating = useRef(false);
     const acceptSnapshot = useCallback((next: SessionSnapshot) => {
         if (!mounted.current || next.version < (snapshotRef.current?.version ?? 0)) return false;
@@ -117,7 +129,7 @@ export default function App() {
                 if (!acceptSnapshot(next)) return;
                 if (next.mode !== "idle") {
                     setPlaying(false);
-                    setDialog(current => (current?.type === "about" ? current : null));
+                    setDialog(current => (isInfoDialog(current) ? current : null));
                     setPicking(false);
                 }
             })
@@ -161,8 +173,9 @@ export default function App() {
         return () => clearTimeout(timer);
     }, [toast]);
     const lastError = (snapshot ?? workspace?.session)?.lastError;
-    const formDialog = !!dialog && dialog.type !== "about";
+    const formDialog = !!dialog && !isInfoDialog(dialog);
     useEffect(() => {
+        dialogRef.current = dialog;
         setDialogNode(globalThis.document.querySelector<HTMLDialogElement>("dialog.dialog[open]"));
     }, [dialog, picking]);
     useEffect(() => {
@@ -247,7 +260,7 @@ export default function App() {
     );
     const openDialog = useCallback((next: Dialog) => {
         setPlaying(false);
-        if (next?.type !== "about") setError(null);
+        if (!isInfoDialog(next)) setError(null);
         setPicking(false);
         setPickedPoint(null);
         setDialog(next);
@@ -258,6 +271,42 @@ export default function App() {
         setPickedPoint(null);
         if (formDialog) setError(null);
     }, [formDialog]);
+    // 检查更新不经过 run()：网络查询不该全局加锁，也不返回 Workspace/Snapshot。
+    const checkUpdate = useCallback(
+        async (manual: boolean) => {
+            const serial = ++updateSerial.current;
+            setUpdateStatus("checking");
+            setUpdateError("");
+            if (manual) openDialog({ type: "update" });
+            try {
+                const info = await checkForUpdate(version);
+                if (!mounted.current || serial !== updateSerial.current) return;
+                setUpdateInfo(info);
+                if (!info) {
+                    setUpdateStatus("latest");
+                    return;
+                }
+                setUpdateStatus("available");
+                if (manual) return;
+                // 启动静默检查不打断用户：已有对话框或会话忙时只提示，结果保留供手动查看。
+                if (dialogRef.current || (snapshotRef.current && snapshotRef.current.mode !== "idle")) {
+                    setToast(`发现新版本 v${info.version}，可在「帮助 → 检查更新」查看`);
+                } else {
+                    openDialog({ type: "update" });
+                }
+            } catch (e) {
+                if (!mounted.current || serial !== updateSerial.current) return;
+                if (!manual) return;
+                setUpdateError(e instanceof Error ? e.message : String(e));
+                setUpdateStatus("error");
+            }
+        },
+        [openDialog],
+    );
+    // 启动时静默检查一次；dev 下 StrictMode 双触发属正常，updateSerial 保证只认最新结果。
+    useEffect(() => {
+        void checkUpdate(false);
+    }, [checkUpdate]);
     const document = workspace?.document;
     const session = snapshot ?? workspace?.session;
     const mode = session?.mode ?? "idle";
@@ -492,6 +541,7 @@ export default function App() {
                     }
                 }}
                 onShortcuts={() => openDialog({ type: "shortcuts" })}
+                onCheckUpdate={() => void checkUpdate(true)}
                 onAbout={() => openDialog({ type: "about" })}
             />
             {dialogNode ? createPortal(errorNotification, dialogNode) : errorNotification}
@@ -804,6 +854,49 @@ export default function App() {
                         <p className="about-description">录制一次，按需要编辑，再预览或执行重复操作。</p>
                     </div>
                     <div className="dialog-actions">
+                        <button type="button" className="button" onClick={() => void checkUpdate(true)}>
+                            检查更新…
+                        </button>
+                        <button type="button" className="button" onClick={closeDialog}>
+                            关闭
+                        </button>
+                    </div>
+                </Modal>
+            )}
+            {dialog?.type === "update" && (
+                <Modal
+                    title="检查更新"
+                    onClose={closeDialog}
+                    wide={updateStatus === "available" && !!updateInfo?.notes}
+                >
+                    <div className="update-body">
+                        {updateStatus === "checking" && <p className="update-status">正在检查更新…</p>}
+                        {updateStatus === "latest" && <p className="update-status">当前已是最新版本（v{version}）。</p>}
+                        {updateStatus === "available" && updateInfo && (
+                            <>
+                                <p className="update-status">
+                                    发现新版本 v{updateInfo.version}（当前 v{version}）。
+                                </p>
+                                {updateInfo.notes && <pre className="update-notes">{updateInfo.notes}</pre>}
+                                <p className="update-hint">将打开 GitHub 发布页，下载安装包后重新安装即可完成更新。</p>
+                            </>
+                        )}
+                        {updateStatus === "error" && (
+                            <p className="form-error" role="alert">
+                                {updateError}
+                            </p>
+                        )}
+                    </div>
+                    <div className="dialog-actions">
+                        {updateStatus === "available" && updateInfo && (
+                            <button
+                                type="button"
+                                className="button primary"
+                                onClick={() => void openUrl(updateInfo.url).catch(() => {})}
+                            >
+                                前往下载
+                            </button>
+                        )}
                         <button type="button" className="button" onClick={closeDialog}>
                             关闭
                         </button>

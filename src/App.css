@@ -1390,6 +1390,36 @@ body.is-resizing-timeline * {
     font: 400 13px var(--figures);
     color: var(--muted);
 }
+.update-body {
+    display: grid;
+    gap: 12px;
+    padding: 24px;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.7;
+}
+.update-status {
+    margin: 0;
+}
+.update-notes {
+    max-height: 260px;
+    overflow: auto;
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--control);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.update-hint {
+    margin: 0;
+    color: var(--faint);
+    font-size: 13px;
+}
 .dialog-form {
     display: flex;
     flex-direction: column;

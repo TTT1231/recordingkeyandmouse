@@ -19,6 +19,7 @@ interface Props {
     onRedo: () => void;
     onDemo: () => void;
     onShortcuts: () => void;
+    onCheckUpdate: () => void;
     onAbout: () => void;
 }
 
@@ -231,6 +232,9 @@ export function TitleBar(p: Props) {
                         <div className="menu-separator" />
                         <button type="button" disabled={disabled} onClick={p.onShortcuts}>
                             快捷键设置…
+                        </button>
+                        <button type="button" onClick={p.onCheckUpdate}>
+                            检查更新…
                         </button>
                         <button type="button" onClick={p.onAbout}>
                             关于 Repeat
