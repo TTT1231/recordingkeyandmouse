@@ -20,7 +20,7 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 | 实际 Tauri 状态条、录制准备和停止 | 按表后说明准备开发服务器与可执行文件。执行状态条选 `native_tauri_overlay_injected_click_receiver`，按提示以 1× 单次执行，真人点击停止时设 `REPEAT_E2E_PHYSICAL_STOP=1`。录制准备和停止按用例的终端提示操作。见 [native_contract.rs](../src-tauri/tests/native_contract.rs) 和 [native_recording_overlay.rs](../src-tauri/tests/native_recording_overlay.rs)。 |
 | 已打开的应用与接收器联动 | 用 `REPEAT_DATA_DIR` 启动隔离实例，把 `REPEAT_VERIFY_APP_DB` 指向其中的 `tasks.sqlite3`。在 [native_contract.rs](../src-tauri/tests/native_contract.rs) 选 `native_app_execution_receiver`，等接收器就绪后在隔离实例中运行固定任务三轮。上面的短样本也会读取此变量，独立运行前须清除它。 |
 | 桌面录像、像素、捕获排除 | 使用带系统媒体组件的 Windows 10 2004 或更新版本。编码与性能用例见 [screen_capture.rs](../src-tauri/src/platform/windows/screen_capture.rs)。验证实际画面、悬浮窗排除及对应输入时，用 [native_screen_video.rs](../src-tauri/tests/native_screen_video.rs)，需本机 FFmpeg 解码像素。 |
-| 显示变化、锁屏、睡眠、权限隔离 | 先按需跑 [native_contract.rs](../src-tauri/tests/native_contract.rs) 中的环境消息用例。真实分辨率切换会让屏幕闪动，锁屏后需手动解锁，睡眠可能需要手动唤醒，权限隔离用例需要确认 UAC。安排可配合的时间后单独运行。 |
+| 显示变化、锁屏、睡眠、权限隔离 | 改到环境监视时，先跑 [native_contract.rs](../src-tauri/tests/native_contract.rs) 的环境消息用例。需要确认系统实际投递通知时，再单独测试真实分辨率切换、锁屏或睡眠。锁屏后需手动解锁，睡眠可能需要手动唤醒。改到注入权限或要验证管理员目标时，单独运行 UIPI 用例，按 UAC 提示启动管理员接收器。真实锁屏、睡眠和 UIPI 仍缺实机通过记录。 |
 
 实际 Tauri 状态条及录制流程用例会自行启动隔离实例。先从仓库根目录运行 `pnpm dev`，再将 `REPEAT_E2E_EXECUTABLE` 指向已编译的调试版 Repeat 可执行文件绝对路径。
 
@@ -33,7 +33,7 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 用 `REPEAT_DATA_DIR` 指向临时目录，再从仓库根目录启动 `pnpm tauri dev`。按改动选择对应场景。
 
 - **录制与任务保存**。在两个任务间切换、录制并重开。取消准备或放弃重录后核对原任务，模拟保存失败时核对错误提示与重试。检查倒计时内的输入和停止按钮点击未录入，结束前的普通操作及末尾停顿保留。
-- **编辑与预览**。检查保存、取消、撤销和重做。插入等待后核对动作与时长，拖动、缩放时间线时核对列表与预览同步。改到录像时，检查重开后的播放、定位及编辑时间后的画面对应关系。
+- **编辑与预览**。检查保存、取消、撤销和重做。插入等待后核对动作与时长，拖动、缩放时间线时核对列表与预览同步。改到时间线绘制或交互时，顺带核对窄等待标记能否看见、选中和拖动。改到录像时，检查重开后的播放、定位及编辑时间后的画面对应关系。
 - **系统执行与停止**。用混合键鼠样本覆盖开头、中间和结尾的停顿、组合键和拖拽。按改动核对多轮执行、无限循环停止、带修饰键的全局停止及收尾。涉及真实输入的结论同时需要下节的事件证据。
 - **演示与工作区**。演示进入、重置和退出后核对真实任务仍可继续使用。涉及选点、缩放或布局时，在实际窗口检查坐标、面板和小窗口操作。
 
@@ -53,6 +53,9 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 
 已有实机证据主要来自 Windows 10 22H2 x64、单屏 1920×1080 / 125%。历史样本覆盖短混合录放、长停顿调度、键盘编辑、应用三轮执行、真实分辨率切换取消、录制准备与三种停止方式，以及实际 Tauri 状态条穿透和桌面录像像素核对。验收当前改动时，按目标环境复测相关路径。
 
-- 多屏、负坐标、不同 DPI、更多目标应用，以及录像在发布构建、长时间录制和繁忙负载下的表现仍缺验证。
-- 执行期间关闭主窗口后，旧样本中的 Ctrl 按下状态已清除，但缺少目标侧抬起事件的完整证据。锁屏、睡眠和权限隔离用例已编写，仍待实测。
-- 界面侧仍缺参考图选点、小窗口与侧栏调宽、窄等待标记、保存失败重试和无限循环停止的完整实机记录。
+当前优先补四项 Windows 实测。
+
+- **跨屏录放与选点**。用副屏在主屏左侧、两屏缩放不同的配置，核对负坐标、跨屏录放和参考图选点。
+- **发布版长录制**。在日常桌面场景下观察帧间隔、内存趋势和文件增长，停止后重开任务并确认录像可播放。
+- **保存失败后重试**。在隔离实例模拟写入失败，确认界面提示未保存、原任务保留。恢复写入后，通过界面重试，再重开核对动作和录像。
+- **执行中关闭主窗口**。在回放持有 Ctrl 时关闭主窗口，核对接收窗口的抬起消息。旧样本只确认了 Ctrl 最终已松开，接收侧证据仍缺。

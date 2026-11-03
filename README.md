@@ -1,6 +1,6 @@
 # Repeat
 
-Repeat 是一款桌面键鼠录制、编辑与回放工具。
+Repeat 是一款 Windows 桌面键鼠录制、编辑与回放工具。
 
 ## 演示效果
 
