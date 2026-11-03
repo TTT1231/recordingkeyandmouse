@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Repeat 是 Tauri 2 + React/TypeScript + Rust 桌面键鼠录制工具。项目介绍和用法见 [README](README.md)，架构与实现入口见[技术架构决策](docs/decisions/technical-selection.md)。目前只有 Windows 输入后端，不能把 Linux 候选方案写成已支持。
+Repeat 是 Tauri 2 + React/TypeScript + Rust 桌面键鼠录制工具。项目介绍和用法见 [README](README.md)，主要选型、理由和架构边界见[技术架构决策](docs/decisions/technical-selection.md)。目前只有 Windows 输入后端，不能把 Linux 候选方案写成已支持。
 
 ## 代码入口
 
@@ -37,7 +37,8 @@ Repeat 是 Tauri 2 + React/TypeScript + Rust 桌面键鼠录制工具。项目�
 ## 文档维护
 
 - 根 README 面向初次了解项目的读者，只放项目介绍、主要功能、上手和开发入口；不放开发进度、验收状态、待办清单或内部实现细则。
-- 跨模块行为约定、技术规则与选择理由更新 `docs/decisions/technical-selection.md`；测试方法、证据入口、验证状态与剩余事项更新 `docs/testing.md`。
+- 技术方案或其长期架构边界变更时，更新 `docs/decisions/technical-selection.md` 中的决策与依据。局部实现细节查源码和测试。
+- 测试方法、证据入口、验证状态与剩余事项更新 `docs/testing.md`。
 - 在原章节直接替换旧结论，不追加“第 X 轮”、对话过程、完成清单或每次测试数量。只有结论、边界或复现方法改变才更新文档。
 - 已完成计划、旧原型和一次性输出交给 Git 历史或测试产物，不再维护重复的需求、进度与目录索引。新增文档须有独立查阅用途。
 - 代码证明“有实现”，实机证据才证明“在该环境已验证”。未验证能力、候选方案和当前支持范围必须区分。
