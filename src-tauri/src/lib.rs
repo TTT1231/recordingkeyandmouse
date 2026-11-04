@@ -44,6 +44,60 @@ pub fn run() {
             app.manage(session.clone());
             session.init(app.handle())?;
             overlay::create(app.handle())?;
+            // Debug-only hook for the window-close test, with a separate data directory.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("REPEAT_DATA_DIR").is_some()
+                && let Ok(raw) = std::env::var("REPEAT_E2E_AUTO_EXECUTE_MS")
+                && let Ok(delay) = raw.parse::<u64>()
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    let session = handle.state::<Arc<session::AppSession>>();
+                    let target = session
+                        .workspace()
+                        .ok()
+                        .map(|view| (view.document.task_id, view.document.revision));
+                    match target {
+                        Some((id, revision)) => {
+                            if let Err(reason) =
+                                session.start_execution(&handle, &id, revision, 1, 1.0)
+                            {
+                                eprintln!("REPEAT_E2E_AUTO_EXECUTE 失败：{reason}");
+                                return;
+                            }
+                            // 只读回读：回放开始与执行结束（含提前失败）都输出，供用例诊断。
+                            let mut executing = false;
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_secs(120);
+                            loop {
+                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                let snapshot = session.snapshot();
+                                if snapshot.mode == "executing" && !executing {
+                                    executing = true;
+                                    eprintln!(
+                                        "REPEAT_E2E_AUTO_EXECUTE 回放开始：injected={}",
+                                        snapshot
+                                            .execution_live
+                                            .map(|live| live.events_injected)
+                                            .unwrap_or(0)
+                                    );
+                                }
+                                if snapshot.mode != "executing" && snapshot.mode != "preparing"
+                                    || std::time::Instant::now() > deadline
+                                {
+                                    eprintln!(
+                                        "REPEAT_E2E_AUTO_EXECUTE 结束：mode={} last_error={:?}",
+                                        snapshot.mode, snapshot.last_error
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        None => eprintln!("REPEAT_E2E_AUTO_EXECUTE 失败：没有活动任务"),
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

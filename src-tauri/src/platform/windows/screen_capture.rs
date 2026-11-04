@@ -421,6 +421,7 @@ impl DesktopCapture {
     fn frame(&mut self, frame: &mut Vec<u8>) -> Result<(), String> {
         let captured = Instant::now();
         unsafe {
+            // CAPTUREBLT can hide and restore the system cursor on each frame.
             let copied =
                 if self.width as i32 == self.rect.width && self.height as i32 == self.rect.height {
                     BitBlt(
@@ -432,7 +433,7 @@ impl DesktopCapture {
                         Some(self.desktop),
                         self.rect.x,
                         self.rect.y,
-                        SRCCOPY | CAPTUREBLT,
+                        SRCCOPY,
                     )
                     .is_ok()
                 } else {
@@ -447,7 +448,7 @@ impl DesktopCapture {
                         self.rect.y,
                         self.rect.width,
                         self.rect.height,
-                        SRCCOPY | CAPTUREBLT,
+                        SRCCOPY,
                     )
                     .as_bool()
                 };

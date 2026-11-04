@@ -677,38 +677,43 @@ impl AppSession {
             unreachable!()
         };
         let finished = live.buffer.lock().unwrap().finish();
-        let media = live.screen.finish(finished.duration_us);
+        let recording = (|| {
+            if finished.overflow {
+                return Err("捕获队列溢出，本次录制未替换原任务".into());
+            }
+            live.collected
+                .try_reserve(finished.events.len())
+                .map_err(|_| "内存不足，本次录制未保存，原任务已保留".to_string())?;
+            live.collected.extend(finished.events);
+            let duration = crate::capture::trim_control_gesture(
+                &mut live.collected,
+                finished.duration_us,
+                gesture,
+            );
+            if live.collected.is_empty() {
+                #[cfg(windows)]
+                if crate::platform::windows::foreground_elevation_mismatch() {
+                    return Err("当前窗口以管理员权限运行，原任务已保留。请用管理员权限启动 Repeat 后再录制。".into());
+                }
+                return Err("没有录到键盘或鼠标操作，原任务已保留。请重新录制。".into());
+            }
+            let media = live
+                .screen
+                .finish(finished.duration_us)
+                .map_err(|reason| format!("桌面画面未能保存，原任务仍保留。{reason}"))?;
+            Ok((duration, media))
+        })();
         crate::overlay::hide(app);
         self.restore_recording_workspace(app);
-        let media = match media {
-            Ok(media) => media,
+        let (duration, media) = match recording {
+            Ok(recording) => recording,
             Err(reason) => {
-                st.last_error = Some(format!("桌面画面未能保存，原任务仍保留。{reason}"));
+                st.last_error = Some(reason);
                 drop(st);
                 self.emit_state(app);
                 return Ok(());
             }
         };
-        if finished.overflow {
-            let _ = self.delete_unreferenced_media(&st, std::slice::from_ref(&live.media_id));
-            st.last_error = Some("捕获队列溢出，本次录制未替换原任务".into());
-            drop(st);
-            self.emit_state(app);
-            return Ok(());
-        }
-        if live.collected.try_reserve(finished.events.len()).is_err() {
-            let _ = self.delete_unreferenced_media(&st, std::slice::from_ref(&live.media_id));
-            st.last_error = Some("内存不足，录制未能保存，原任务仍保留".into());
-            drop(st);
-            self.emit_state(app);
-            return Ok(());
-        }
-        live.collected.extend(finished.events);
-        let duration = crate::capture::trim_control_gesture(
-            &mut live.collected,
-            finished.duration_us,
-            gesture,
-        );
         let mut next = st.current.clone();
         next.replace_recording(RawRecording {
             gestures: live.gestures,

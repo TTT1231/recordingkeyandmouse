@@ -2654,3 +2654,312 @@ fn native_tauri_overlay_injected_click_receiver() {
     assert_eq!(relevant[3].value, 0x75);
     println!("TAURI_OVERLAY_NATIVE_EVIDENCE {evidence}");
 }
+
+/// 已由实机证据确认的链路不再重复：状态条物理停止会释放仍持有的 Ctrl、注入
+/// 成对事件到达接收窗口与钩子。本用例只验收新触发路径——执行中向主窗口投递
+/// WM_CLOSE（与标题栏关闭、Alt+F4 汇聚到同一 CloseRequested），进程须先 join
+/// 执行线程完成收尾释放，再退出；接收端在该窗口关闭之后收到 Ctrl 抬起消息。
+#[test]
+#[ignore = "启动隔离 Repeat 并在执行中关闭主窗口；向真实桌面注入 Ctrl，运行期间请保持键鼠空闲"]
+fn native_app_window_close_releases_held_ctrl() {
+    // 与隔离实例同为 PMv2 物理像素，显示器布局核对才能一致。
+    platform::init_process_dpi();
+    let executable = std::env::var_os("REPEAT_E2E_EXECUTABLE")
+        .expect("REPEAT_E2E_EXECUTABLE 须指向隔离测试使用的 Repeat 可执行文件");
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("close-e2e-{}", std::process::id()));
+    std::fs::create_dir(&data_dir).expect("测试目录已存在或无法创建");
+    let geometry = platform::snapshot_geometry();
+    let mut doc = TaskDocument::new(
+        "关窗释放固定样本".into(),
+        geometry.clone(),
+        platform::current_layout_klid(),
+    );
+    // 与物理停止样本同构：回放开始 100ms 后按下 Ctrl，长按 30 秒不抬起；
+    // 正常流程中主窗口会在长按期间被关闭，样本自带的抬起不会先到。
+    let sample: Vec<(EventKind, i64)> =
+        vec![(key(0xA2, true), 100_000), (key(0xA2, false), 30_000_000)];
+    let events = sample
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, time_us))| RecordedEvent {
+            seq: index as u64 + 1,
+            time_us,
+            native_time_ms: 0,
+            kind,
+        })
+        .collect();
+    doc.replace_recording(RawRecording {
+        gestures: Default::default(),
+        started_at_wall_ms: 0,
+        duration_us: 30_200_000,
+        events,
+        geometry,
+        layout_klid: platform::current_layout_klid(),
+    });
+    doc.validate_execution().unwrap();
+    let mut store = Store::open(&data_dir.join("tasks.sqlite3")).unwrap();
+    store.insert(&doc).unwrap();
+    // 与状态条用例相同：避开默认 F8/F9，独立于可能正在运行的 Repeat。
+    store
+        .set_setting(
+            "hotkeys",
+            &serde_json::to_string(&Hotkeys {
+                record_vk: 0x79,
+                stop_vk: 0x7a,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    struct ChildCleanup {
+        process: std::process::Child,
+    }
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+            if unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0 {
+                // 测试中断时的兜底：补发抬起，避免系统级 Ctrl 卡键。
+                external(key(0xA2, false));
+            }
+        }
+    }
+    let child = Command::new(executable)
+        .env("REPEAT_DATA_DIR", &data_dir)
+        // 放宽到 2 秒：等 WebView2 初始化完成，避免其就绪抢焦点落在回放开始之后。
+        .env("REPEAT_E2E_AUTO_EXECUTE_MS", "2000")
+        .spawn()
+        .expect("无法启动隔离 Repeat");
+    let mut child = ChildCleanup { process: child };
+    let pid = child.process.id();
+    let keyboard_probe = KeyboardProbe::start();
+    // 按标题与进程枚举顶层窗口：标题是精确匹配，不会与状态条/边框/接收器混淆。
+    let window_of = |title: PCWSTR| -> Option<HWND> {
+        let mut previous = None;
+        while let Ok(hwnd) = unsafe { FindWindowExW(None, previous, None, title) } {
+            let mut owner_pid = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner_pid)) };
+            if owner_pid == pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+                return Some(hwnd);
+            }
+            previous = Some(hwnd);
+        }
+        None
+    };
+    println!("APP_CLOSE_READY pid={pid}: 隔离实例将自动执行固定任务，随后关闭其主窗口");
+    // 状态条出现 = 自动执行入口生效，3 秒倒计时已开始。
+    let started = Instant::now();
+    let overlay_hwnd = loop {
+        if let Some(hwnd) = window_of(w!("Repeat 执行状态")) {
+            break hwnd;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "隔离实例未开始执行（未出现状态条），请查看子进程输出"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    let receiver = Receiver::new(false);
+    let focus_receiver = |receiver: &Receiver| {
+        unsafe {
+            SetWindowPos(
+                HWND(receiver.hwnd as *mut _),
+                Some(HWND_TOP),
+                120,
+                120,
+                900,
+                650,
+                SWP_NOACTIVATE,
+            )
+            .unwrap();
+            let _ = SendMessageW(HWND(receiver.hwnd as *mut _), WM_APP + 12, None, None);
+        }
+        thread::sleep(Duration::from_millis(150));
+    };
+    focus_receiver(&receiver);
+    receiver.clear();
+    // 执行边框出现 = 回放已开始。启动任务或 WebView2 就绪都可能夺回焦点：
+    // 反复压前直到接收器确实持有前台，后续注入的 Ctrl 消息才会投递到它。
+    let wait_frame = Instant::now();
+    loop {
+        if window_of(w!("Repeat 执行范围")).is_some() {
+            break;
+        }
+        assert!(
+            wait_frame.elapsed() < Duration::from_secs(10),
+            "回放开始后未显示执行边框"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let focus_settled = Instant::now();
+    loop {
+        focus_receiver(&receiver);
+        if unsafe { GetForegroundWindow() }.0 as usize == receiver.hwnd {
+            break;
+        }
+        // 每次失败都记录前台窗口归属；提权前台会同时阻断焦点舞步与注入可见性。
+        let foreground = unsafe { GetForegroundWindow() };
+        let mut fg_pid = 0;
+        unsafe { GetWindowThreadProcessId(foreground, Some(&mut fg_pid)) };
+        let mut class_buf = [0u16; 64];
+        let class_len = unsafe { GetClassNameW(foreground, &mut class_buf) };
+        let mut title_buf = [0u16; 128];
+        let title_len = unsafe { GetWindowTextW(foreground, &mut title_buf) };
+        eprintln!(
+            "焦点未取得：foreground hwnd={:?} pid={fg_pid} class={:?} title={:?}",
+            foreground.0,
+            String::from_utf16_lossy(&class_buf[..class_len as usize]),
+            String::from_utf16_lossy(&title_buf[..title_len as usize]),
+        );
+        assert!(
+            focus_settled.elapsed() < Duration::from_secs(10),
+            "接收器持续无法取得前台焦点（请确认运行期间没有真人操作键鼠，且前台没有管理员权限窗口）"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    // Ctrl 已被注入按住（回放 100ms 处按下）。
+    let wait_hold = Instant::now();
+    loop {
+        if unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 != 0 {
+            break;
+        }
+        assert!(
+            wait_hold.elapsed() < Duration::from_secs(8),
+            "隔离任务未按住 Ctrl，无法验收关窗释放；钩子观测={hook_events:?} 接收器={receiver_dump:?}（执行失败原因见子进程 stderr）",
+            hook_events = keyboard_probe.events.lock().unwrap(),
+            receiver_dump = receiver.messages(),
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let main_hwnd = loop {
+        if let Some(hwnd) = window_of(w!("Repeat")) {
+            break hwnd;
+        }
+        assert!(
+            wait_hold.elapsed() < Duration::from_secs(10),
+            "未找到隔离实例主窗口"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    // 关窗前最后一次确认前台：等待 Ctrl 期间焦点可能再次被夺走。
+    focus_receiver(&receiver);
+    assert_eq!(
+        unsafe { GetForegroundWindow() }.0 as usize,
+        receiver.hwnd,
+        "关窗前接收器失去前台焦点，抬起消息无法核收"
+    );
+    // 与点击关闭按钮同源的本地消息路径：tao 收到 WM_CLOSE 发出 CloseRequested。
+    let close_sent = Instant::now();
+    unsafe {
+        PostMessageW(Some(main_hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).expect("投递 WM_CLOSE 失败");
+    }
+    // 优雅退出顺序：信号停止 → join 执行线程（收尾释放）→ 服务关闭 → 进程退出。
+    let exit_status = loop {
+        if let Some(status) = child.process.try_wait().expect("查询子进程状态失败") {
+            break status;
+        }
+        assert!(
+            close_sent.elapsed() < Duration::from_secs(20),
+            "关闭主窗口后进程未在 20 秒内退出"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let exit_elapsed = close_sent.elapsed();
+    let mut async_up = false;
+    let wait_state = Instant::now();
+    while wait_state.elapsed() < Duration::from_secs(1) {
+        if unsafe { GetAsyncKeyState(0xA2) } as u16 & 0x8000 == 0 {
+            async_up = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let messages = receiver.messages();
+    let ctrl: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            matches!(m.value, 0x11 | 0xA2 | 0xA3)
+                && matches!(m.msg, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP)
+        })
+        .collect();
+    let ups_after_close: Vec<_> = ctrl
+        .iter()
+        .filter(|m| matches!(m.msg, WM_KEYUP | WM_SYSKEYUP) && m.at > close_sent)
+        .collect();
+    assert_eq!(
+        ups_after_close.len(),
+        1,
+        "接收端在关窗后应恰好收到一次 Ctrl 抬起：{ctrl:?}"
+    );
+    let scan = ((ups_after_close[0].lp >> 16) & 0xFF) as u32;
+    assert_eq!(scan, 0x1D, "抬起消息扫描码与按下的左 Ctrl 不一致：{ctrl:?}");
+    // 消息层 Ctrl 统一为 VK_CONTROL(0x11)，左右由 lParam 位 24 扩展键区分；
+    // wParam 可能是原始 0xA2，也可能是翻译后的 0x11。按下与抬起须同为左 Ctrl
+    // （扫描码 0x1D、扩展位 0），且不得出现其他修饰键。
+    let is_left_ctrl = |m: &Received| {
+        matches!(m.value, 0x11 | 0xA2) && ((m.lp >> 16) & 0xFF) == 0x1D && (m.lp >> 24) & 1 == 0
+    };
+    assert!(
+        ctrl.iter().all(|m| is_left_ctrl(m)),
+        "接收端出现预期外的修饰键事件（运行期间请保持键盘空闲）：{ctrl:?}"
+    );
+    let hook_events = keyboard_probe.events.lock().unwrap().clone();
+    let injected = |msg| {
+        hook_events.iter().any(|(event, vk, flags, marker)| {
+            *event == msg
+                && *vk == 0xA2
+                && *flags & LLKHF_INJECTED.0 != 0
+                && *marker == platform::windows::REPEAT_INJECT_MARKER
+        })
+    };
+    assert!(
+        injected(WM_KEYDOWN) && injected(WM_KEYUP),
+        "钩子未观察到 Repeat 注入的成对 Ctrl 事件：{hook_events:?}"
+    );
+    assert!(async_up, "进程退出后系统异步键状态仍显示 Ctrl 按下");
+    assert!(
+        !unsafe { IsWindowVisible(overlay_hwnd) }.as_bool(),
+        "收尾未隐藏状态条"
+    );
+    assert_eq!(
+        exit_status.code(),
+        Some(0),
+        "隔离实例退出码异常：{exit_status:?}"
+    );
+    let close_to_up_ms = ups_after_close[0]
+        .at
+        .saturating_duration_since(close_sent)
+        .as_millis();
+    let evidence = serde_json::json!({
+        "fixture": "isolated Repeat; auto-execute via REPEAT_E2E_AUTO_EXECUTE_MS; WM_CLOSE to main window while injected Ctrl held",
+        "dataDir": data_dir,
+        "pid": pid,
+        "sample": [{"vk": 162, "action": "down", "atUs": 100000}, {"vk": 162, "action": "up", "atUs": 30000000}],
+        "ctrlHeldBeforeClose": true,
+        "closeToReceiverKeyUpMs": close_to_up_ms,
+        "closeToProcessExitMs": exit_elapsed.as_millis(),
+        "exitCode": exit_status.code(),
+        "asyncCtrlUpAfterExit": async_up,
+        "receiverCtrlEvents": ctrl.iter().map(|m| serde_json::json!({
+            "message": match m.msg { WM_KEYDOWN => "WM_KEYDOWN", WM_KEYUP => "WM_KEYUP", WM_SYSKEYDOWN => "WM_SYSKEYDOWN", _ => "WM_SYSKEYUP" },
+            "vk": m.value,
+            "scanCode": (m.lp >> 16) & 0xFF,
+            "extendedKey": (m.lp >> 24) & 1,
+            "msFromClose": m.at.saturating_duration_since(close_sent).as_millis(),
+        })).collect::<Vec<_>>(),
+        "hookEvents": hook_events.iter().map(|(msg, vk, flags, marker)| serde_json::json!({
+            "message": if *msg == WM_KEYDOWN { "WM_KEYDOWN" } else { "WM_KEYUP" },
+            "vk": vk,
+            "injected": flags & LLKHF_INJECTED.0 != 0,
+            "repeatMarker": *marker == platform::windows::REPEAT_INJECT_MARKER,
+        })).collect::<Vec<_>>(),
+    });
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/app-close-releases-ctrl-evidence.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    println!("APP_CLOSE_RELEASE_EVIDENCE {evidence}");
+}

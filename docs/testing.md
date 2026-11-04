@@ -18,11 +18,13 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 | --- | --- |
 | 录放保真、键盘编辑、停止收尾、执行边缘坐标 | 从 [native_contract.rs](../src-tauri/tests/native_contract.rs) 选用例。要测长停顿与调度，可为上面的短样本设置 `REPEAT_NATIVE_SECONDS=180`。时长达到 20 秒后样本仅包含鼠标移动，接收器也不记录移动，三分钟混合录放需另做实机操作。 |
 | 实际 Tauri 状态条、录制准备和停止 | 按表后说明准备开发服务器与可执行文件。执行状态条选 `native_tauri_overlay_injected_click_receiver`，按提示以 1× 单次执行，真人点击停止时设 `REPEAT_E2E_PHYSICAL_STOP=1`。录制准备和停止按用例的终端提示操作。见 [native_contract.rs](../src-tauri/tests/native_contract.rs) 和 [native_recording_overlay.rs](../src-tauri/tests/native_recording_overlay.rs)。 |
+| 执行中关闭主窗口的收尾释放 | 用 [native_contract.rs](../src-tauri/tests/native_contract.rs) 的 `native_app_window_close_releases_held_ctrl`。将 `REPEAT_E2E_EXECUTABLE` 指向调试版可执行文件，无需启动开发服务器。用例在回放持有 Ctrl 时向主窗口投递 `WM_CLOSE`，核对接收端抬起消息的扫描码和扩展位、钩子侧的注入配对及进程退出码。测试期间让普通权限窗口保持可获焦点。 |
+| 保存失败后界面重试 | 用 [native_save_retry.rs](../src-tauri/tests/native_save_retry.rs) 的 `native_save_failure_ui_retry`。按表后说明准备开发服务器和调试版可执行文件，并确保 `PATH` 中有 `ffprobe`。用例锁住隔离数据库模拟写入失败，核对错误提示和原任务，通过界面点击「重试保存」，再重开核对动作和录像时长。 |
 | 已打开的应用与接收器联动 | 用 `REPEAT_DATA_DIR` 启动隔离实例，把 `REPEAT_VERIFY_APP_DB` 指向其中的 `tasks.sqlite3`。在 [native_contract.rs](../src-tauri/tests/native_contract.rs) 选 `native_app_execution_receiver`，等接收器就绪后在隔离实例中运行固定任务三轮。上面的短样本也会读取此变量，独立运行前须清除它。 |
 | 桌面录像、像素、捕获排除 | 使用带系统媒体组件的 Windows 10 2004 或更新版本。编码与性能用例见 [screen_capture.rs](../src-tauri/src/platform/windows/screen_capture.rs)。验证实际画面、悬浮窗排除及对应输入时，用 [native_screen_video.rs](../src-tauri/tests/native_screen_video.rs)，需本机 FFmpeg 解码像素。 |
 | 显示变化、锁屏、睡眠、权限隔离 | 改到环境监视时，先跑 [native_contract.rs](../src-tauri/tests/native_contract.rs) 的环境消息用例。需要确认系统实际投递通知时，再单独测试真实分辨率切换、锁屏或睡眠。锁屏后需手动解锁，睡眠可能需要手动唤醒。改到注入权限或要验证管理员目标时，单独运行 UIPI 用例，按 UAC 提示启动管理员接收器。真实锁屏、睡眠和 UIPI 仍缺实机通过记录。 |
 
-实际 Tauri 状态条及录制流程用例会自行启动隔离实例。先从仓库根目录运行 `pnpm dev`，再将 `REPEAT_E2E_EXECUTABLE` 指向已编译的调试版 Repeat 可执行文件绝对路径。
+需要操作 Repeat 界面的用例会自行启动隔离实例。先从仓库根目录运行 `pnpm dev`，再将 `REPEAT_E2E_EXECUTABLE` 指向已编译的调试版 Repeat 可执行文件绝对路径。
 
 录制停止用例 `native_recording_overlay_stop_preserves_prior_click` 默认测状态条按钮，核对普通点击、末尾移动和停止手势。主窗口按钮、F10 和快速双击分别通过 `REPEAT_E2E_MAIN_STOP=1`、`REPEAT_E2E_HOTKEY_STOP=1`、`REPEAT_E2E_MAIN_RACE=1` 单独测试。快速双击若未命中竞态，记为结果未定。
 
@@ -51,11 +53,4 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 
 ## 验证边界
 
-已有实机证据主要来自 Windows 10 22H2 x64、单屏 1920×1080 / 125%。历史样本覆盖短混合录放、长停顿调度、键盘编辑、应用三轮执行、真实分辨率切换取消、录制准备与三种停止方式，以及实际 Tauri 状态条穿透和桌面录像像素核对。验收当前改动时，按目标环境复测相关路径。
-
-当前优先补四项 Windows 实测。
-
-- **跨屏录放与选点**。用副屏在主屏左侧、两屏缩放不同的配置，核对负坐标、跨屏录放和参考图选点。
-- **发布版长录制**。在日常桌面场景下观察帧间隔、内存趋势和文件增长，停止后重开任务并确认录像可播放。
-- **保存失败后重试**。在隔离实例模拟写入失败，确认界面提示未保存、原任务保留。恢复写入后，通过界面重试，再重开核对动作和录像。
-- **执行中关闭主窗口**。在回放持有 Ctrl 时关闭主窗口，核对接收窗口的抬起消息。旧样本只确认了 Ctrl 最终已松开，接收侧证据仍缺。
+已有实机证据主要来自 Windows 10 22H2 x64、单屏 1920×1080 / 125%。历史样本覆盖短混合录放、长停顿调度、键盘编辑、应用三轮执行、真实分辨率切换取消、录制准备与三种停止方式，以及实际 Tauri 状态条穿透、执行中关闭主窗口的收尾释放、保存失败后界面重试和桌面录像像素核对。验收当前改动时，按目标环境复测相关路径。

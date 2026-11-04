@@ -264,9 +264,22 @@ fn native_recording_preparation_excludes_early_input() {
         original
     );
 
+    tap(0x79);
+    wait_until("无输入录制开始", || border_visible(pid));
+    thread::sleep(Duration::from_millis(200));
+    tap(0x79);
+    wait_until("无输入录制结束", || {
+        overlay_for_process(pid).is_none()
+    });
+
     let requested_at_ms = repeat_lib::document::wall_ms();
     tap(0x79);
     wait_until("再次准备", || overlay_for_process(pid).is_some());
+    assert_eq!(
+        store.load(&doc.id).unwrap().revision,
+        doc.revision,
+        "只有录制控制键的样本不得替换原任务"
+    );
     tap(0x75);
     wait_until("正式录制边框", || border_visible(pid));
     let recording_window =
@@ -304,6 +317,13 @@ fn native_recording_preparation_excludes_early_input() {
         .join("recordings")
         .join(format!("{}.mp4", screen.id));
     assert!(std::fs::metadata(&video).unwrap().len() > 1000);
+    assert_eq!(
+        std::fs::read_dir(directory.join("recordings"))
+            .unwrap()
+            .count(),
+        1,
+        "只有成功录制应留下录像文件"
+    );
     let reopened = Store::open(&directory.join("tasks.sqlite3")).unwrap();
     assert_eq!(
         reopened.load(&doc.id).unwrap().screen_recording.as_ref(),
@@ -315,6 +335,7 @@ fn native_recording_preparation_excludes_early_input() {
         "recordingWindow": recording_window,
         "geometry": raw.geometry,
         "cancelPreservedDocument": true,
+        "emptyCapturePreservedDocument": true,
         "preparationMs": raw.started_at_wall_ms - requested_at_ms,
         "durationUs": raw.duration_us,
         "recordedKeys": keys,
