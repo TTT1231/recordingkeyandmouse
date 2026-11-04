@@ -1,6 +1,6 @@
 # 测试说明
 
-常规检查见 [AGENTS.md](../AGENTS.md#验证改动)。改界面交互时，用 `pnpm tauri dev` 打开实际窗口验证。改捕获、注入、调度或系统停止时，另选对应的 Windows 原生用例并保留事件证据。默认 `cargo test` 跳过这些用例。
+常规检查见 [AGENTS.md](../AGENTS.md#验证改动)。改界面交互时，用 `pnpm tauri dev` 打开实际窗口验证。改捕获、注入、调度或系统停止时，在目标 Windows 环境运行对应的原生用例并核对事件证据。默认 `cargo test` 跳过这些用例。
 
 ## 运行原生测试
 
@@ -22,7 +22,7 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 | 保存失败后界面重试 | 用 [native_save_retry.rs](../src-tauri/tests/native_save_retry.rs) 的 `native_save_failure_ui_retry`。按表后说明准备开发服务器和调试版可执行文件，并确保 `PATH` 中有 `ffprobe`。用例锁住隔离数据库模拟写入失败，核对错误提示和原任务，通过界面点击「重试保存」，再重开核对动作和录像时长。 |
 | 已打开的应用与接收器联动 | 用 `REPEAT_DATA_DIR` 启动隔离实例，把 `REPEAT_VERIFY_APP_DB` 指向其中的 `tasks.sqlite3`。在 [native_contract.rs](../src-tauri/tests/native_contract.rs) 选 `native_app_execution_receiver`，等接收器就绪后在隔离实例中运行固定任务三轮。上面的短样本也会读取此变量，独立运行前须清除它。 |
 | 桌面录像、像素、捕获排除 | 使用带系统媒体组件的 Windows 10 2004 或更新版本。编码与性能用例见 [screen_capture.rs](../src-tauri/src/platform/windows/screen_capture.rs)。验证实际画面、悬浮窗排除及对应输入时，用 [native_screen_video.rs](../src-tauri/tests/native_screen_video.rs)，需本机 FFmpeg 解码像素。 |
-| 显示变化、锁屏、睡眠、权限隔离 | 改到环境监视时，先跑 [native_contract.rs](../src-tauri/tests/native_contract.rs) 的环境消息用例。需要确认系统实际投递通知时，再单独测试真实分辨率切换、锁屏或睡眠。锁屏后需手动解锁，睡眠可能需要手动唤醒。改到注入权限或要验证管理员目标时，单独运行 UIPI 用例，按 UAC 提示启动管理员接收器。真实锁屏、睡眠和 UIPI 仍缺实机通过记录。 |
+| 显示变化、锁屏、睡眠、权限隔离 | 改到环境监视时，先跑 [native_contract.rs](../src-tauri/tests/native_contract.rs) 的环境消息用例。需要确认系统实际投递通知时，再单独测试真实分辨率切换、锁屏或睡眠。锁屏后需手动解锁，睡眠可能需要手动唤醒。改到注入权限或要验证管理员目标时，单独运行 UIPI 用例，按 UAC 提示启动管理员接收器。 |
 
 需要操作 Repeat 界面的用例会自行启动隔离实例。先从仓库根目录运行 `pnpm dev`，再将 `REPEAT_E2E_EXECUTABLE` 指向已编译的调试版 Repeat 可执行文件绝对路径。
 
@@ -36,7 +36,7 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 
 - **录制与任务保存**。在两个任务间切换、录制并重开。取消准备或放弃重录后核对原任务，模拟保存失败时核对错误提示与重试。检查倒计时内的输入和停止按钮点击未录入，结束前的普通操作及末尾停顿保留。
 - **编辑与预览**。检查保存、取消、撤销和重做。插入等待后核对动作与时长，拖动、缩放时间线时核对列表与预览同步。改到时间线绘制或交互时，顺带核对窄等待标记能否看见、选中和拖动。改到录像时，检查重开后的播放、定位及编辑时间后的画面对应关系。
-- **系统执行与停止**。用混合键鼠样本覆盖开头、中间和结尾的停顿、组合键和拖拽。按改动核对多轮执行、无限循环停止、带修饰键的全局停止及收尾。涉及真实输入的结论同时需要下节的事件证据。
+- **系统执行与停止**。用混合键鼠样本覆盖开头、中间和结尾的停顿、组合键和拖拽。按改动核对多轮执行、无限循环停止、带修饰键的全局停止及收尾。涉及真实输入时，按下节核对事件证据。
 - **演示与工作区**。演示进入、重置和退出后核对真实任务仍可继续使用。涉及选点、缩放或布局时，在实际窗口检查坐标、面板和小窗口操作。
 
 ## 事件证据
@@ -47,10 +47,6 @@ cargo test --test native_contract native_capture_edit_save_replay_contract -- --
 - 核对停止后只释放本次执行仍持有的输入，后续计划事件未注入，指针未跳回。
 - `plannedUs` 和 `actualUs` 均相对当前轮起点，后者在注入调用成功返回后采样。比较误差分位数、最大值和首轮首末误差差值。接收窗口的时间来自独立时钟，单独分析。空载 P95 ≤ 5 ms、P99 ≤ 15 ms、三分钟首末误差差值绝对值 ≤ 20 ms、原生停止观察 P95 ≤ 50 ms 是内部回归参考。分位数需用多次样本，目标应用处理延迟需另测。
 
-原生用例的证据写入 `src-tauri/target/`，如 `native-contract-evidence.json`。具体文件名以测试源码和终端输出为准。重跑可能覆盖文件，需要留存的固定样本附在对应变更或测试归档中。只分享固定样本的事件证据，避免提交用户输入和桌面录像。
+原生用例的证据写入 `src-tauri/target/`，如 `native-contract-evidence.json`。具体文件名以测试源码和终端输出为准。重跑可能覆盖文件，需要排查或复现问题时再另存相关证据。只分享固定样本的事件证据，避免提交用户输入和桌面录像。
 
 短样本遇到超时停止时，先检查 `native-contract-failure-evidence.json`。若出现单次注入调用长时间阻塞或鼠标标记缺失，可单独跑 [native_mouse_marker_probe.rs](../src-tauri/tests/native_mouse_marker_probe.rs)，分别对照注入耗时和钩子收到的标记。该探针使用合成输入，物理设备的捕获情况需另测。
-
-## 验证边界
-
-已有实机证据主要来自 Windows 10 22H2 x64、单屏 1920×1080 / 125%。历史样本覆盖短混合录放、长停顿调度、键盘编辑、应用三轮执行、真实分辨率切换取消、录制准备与三种停止方式，以及实际 Tauri 状态条穿透、执行中关闭主窗口的收尾释放、保存失败后界面重试和桌面录像像素核对。验收当前改动时，按目标环境复测相关路径。

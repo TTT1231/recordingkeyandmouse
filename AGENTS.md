@@ -2,12 +2,24 @@
 
 Repeat 是 Tauri 2 + React/TypeScript + Rust 构建的 Windows 桌面键鼠录制工具。项目介绍和用法见 [README](README.md)，主要选型、理由和架构边界见[技术架构决策](docs/decisions/technical-selection.md)。
 
-## 代码入口
+## 项目目录与入口
 
-- `src/`：界面、预览、时间线与 `*.test.ts` 测试；`App.tsx` 组织工作区，`api.ts` 对接 Rust 命令。
-- `src-tauri/src/`：`session.rs` 管会话，`document.rs` 管动作与编辑，`scheduler.rs` 管调度，`storage.rs` 管保存；`platform/windows/` 管系统输入。
-- `src-tauri/tests/`：真实 Windows 输入测试，默认忽略，操作方法见[测试说明](docs/testing.md)。
-- `src-tauri/target/` 是生成产物，不手改、不提交。
+```text
+recordingkeyandmouse/
+├── src/                         # React 界面、编辑与预览；*.test.ts 与源码放在一起
+│   └── components/              # 工作区界面组件
+├── src-tauri/
+│   ├── src/                     # Rust 会话、编辑、调度与存储
+│   │   └── platform/windows/    # Windows 捕获、注入与桌面录像
+│   └── tests/                   # 真实 Windows 输入测试，默认忽略
+└── docs/
+    ├── testing.md               # 测试选择、操作方法与判定依据
+    └── decisions/technical-selection.md  # 技术选型与架构边界
+```
+
+界面从 [App.tsx](src/App.tsx) 和 [api.ts](src/api.ts) 入手，分别组织工作区和对接 Rust 命令。后端按职责进入 [session.rs](src-tauri/src/session.rs)、[document.rs](src-tauri/src/document.rs)、[scheduler.rs](src-tauri/src/scheduler.rs) 和 [storage.rs](src-tauri/src/storage.rs)。
+
+`src-tauri/target/` 是生成产物，不手改、不提交。
 
 ## 硬约束
 
@@ -30,15 +42,15 @@ Repeat 是 Tauri 2 + React/TypeScript + Rust 构建的 Windows 桌面键鼠录�
 
     版本号用 `ls /d/soft/BuildTools/VC/Tools/MSVC` 查看；cmd / PowerShell 不受此冲突影响。
 
-- 涉及真实捕获或注入时，按[测试说明](docs/testing.md)保留事件级证据；模拟测试和目标应用最终显示正确均不能替代原生核对。
+- 涉及真实捕获或注入时，按[测试说明](docs/testing.md)核对事件级证据；模拟测试和目标应用最终显示正确均不能替代原生核对。
 - pre-commit 对暂存的脚本文件执行 lint / 格式化，pre-push 运行 `pnpm typecheck`。已通过且输入未变的检查不必重复。
 - 仅改文档或注释时，核对实现、链接和失效引用；无需为此启动真实录放或增加测试。
 
 ## 文档维护
 
-- 根 README 面向初次了解项目的读者，只放项目介绍、主要功能、上手和开发入口；不放开发进度、验收状态、待办清单或内部实现细则。
+- 根 README 说明项目做什么、怎么使用；效果图按需补充，开发细节由 AGENTS 和相关专题文档承接。
 - 技术方案或其长期架构边界变更时，更新 `docs/decisions/technical-selection.md` 中的决策与依据。局部实现细节查源码和测试。
-- 测试方法、证据入口、验证状态与剩余事项更新 `docs/testing.md`。
-- 在原章节直接替换旧结论，不追加“第 X 轮”、对话过程、完成清单或每次测试数量。只有结论、边界或复现方法改变才更新文档。
+- `docs/testing.md` 只维护测试目的、适用条件、操作方法和判定依据；不记录测试结论、验证状态或待办，也不另建测试汇总或变更记录。
+- 使用方式、约束或测试方法变化时，直接更新原章节；单次测试结果不触发文档更新。
 - 已完成计划、旧原型和一次性输出交给 Git 历史或测试产物，不再维护重复的需求、进度与目录索引。新增文档须有独立查阅用途。
-- 文档按当前支持范围编写。代码证明“有实现”，实机证据才证明“在该环境已验证”。
+- 文档按当前支持范围编写，不把历史测试结果作为当前功能保证。
